@@ -10,6 +10,7 @@ import pdfplumber
 from find_statements import find_statement_pages
 from metrics import extract_metrics_from_page, derive_missing_metrics, Extraction
 from years import detect_years
+from industry import detect_industry
 
 
 def process_report(pdf_path: str, verbose: bool = False) -> dict:
@@ -17,6 +18,17 @@ def process_report(pdf_path: str, verbose: bool = False) -> dict:
 
     all_metrics = {}
     pages_used = {}
+
+    # detect BANK vs INDUSTRIAL from the income statement + balance
+    # sheet text, before extracting - determines whether "revenue" or
+    # "gross_income" is the right top-line concept, and how Debt is
+    # annotated (a bank's deposits aren't conventional debt).
+    income_pages = located.get("income_statement", [])
+    balance_pages = located.get("balance_sheet", [])
+    industry = detect_industry(
+        income_pages[0]["text"] if income_pages else "",
+        balance_pages[0]["text"] if balance_pages else "",
+    )
 
     # income statement + balance sheet + cash flow, best page each.
     # Balance sheet and cash flow commonly spill onto a second page
@@ -45,7 +57,8 @@ def process_report(pdf_path: str, verbose: bool = False) -> dict:
                     pages_used.setdefault(stmt_type + "_pages", []).extend([page_num, page_num + 1])
 
             pages_used[stmt_type] = page_num
-            page_metrics = extract_metrics_from_page(text, page_num, stmt_type=stmt_type)
+            page_metrics = extract_metrics_from_page(text, page_num, stmt_type=stmt_type,
+                                                       industry=industry)
             for k, v in page_metrics.items():
                 # don't overwrite an existing direct match with a weaker one
                 if k not in all_metrics or all_metrics[k].method != "direct":
@@ -56,7 +69,6 @@ def process_report(pdf_path: str, verbose: bool = False) -> dict:
     # figure out which two fiscal years the current/previous columns
     # represent, from the income statement page's header line
     year_current, year_previous = None, None
-    income_pages = located.get("income_statement", [])
     if income_pages:
         year_current, year_previous = detect_years(income_pages[0]["text"])
 
@@ -66,6 +78,7 @@ def process_report(pdf_path: str, verbose: bool = False) -> dict:
         "metrics": all_metrics,
         "year_current": year_current,
         "year_previous": year_previous,
+        "industry": industry,
     }
 
 
@@ -78,8 +91,9 @@ def to_yearly_records(result: dict) -> list:
     This is the shape we merge across multiple reports/years later.
     """
     yc, yp = result["year_current"], result["year_previous"]
-    cur_record = {"year": yc, "source_pdf": result["pdf_path"], "_extractions": {}}
-    prev_record = {"year": yp, "source_pdf": result["pdf_path"], "_extractions": {}}
+    industry = result.get("industry", "industrial")
+    cur_record = {"year": yc, "source_pdf": result["pdf_path"], "industry": industry, "_extractions": {}}
+    prev_record = {"year": yp, "source_pdf": result["pdf_path"], "industry": industry, "_extractions": {}}
 
     for key, ext in result["metrics"].items():
         cur_record[key] = ext.current

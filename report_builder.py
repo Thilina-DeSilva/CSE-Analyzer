@@ -13,6 +13,8 @@ import json
 
 METRIC_LABELS = {
     "revenue": "Revenue",
+    "gross_income": "Gross Income (bank: interest + fee income)",
+    "net_interest_income": "Net Interest Income (bank)",
     "gross_profit": "Gross Profit",
     "operating_profit": "Operating Profit",
     "profit_before_tax": "Profit Before Tax",
@@ -22,7 +24,7 @@ METRIC_LABELS = {
     "total_liabilities": "Total Liabilities",
     "total_equity": "Total Equity",
     "cash_and_equivalents": "Cash & Equivalents",
-    "total_debt": "Total Debt (borrowings, best-effort)",
+    "total_debt": "Total Debt (borrowings, best-effort — see note)",
     "operating_cash_flow": "Operating Cash Flow",
     "dividend_paid": "Dividend Paid",
 }

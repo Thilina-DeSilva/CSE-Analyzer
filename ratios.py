@@ -25,7 +25,10 @@ def compute_ratios_for_year(record: dict, prior_record: dict = None) -> dict:
     average-balance ratios and growth rates."""
     r = {}
 
-    revenue = record.get("revenue")
+    # "revenue-like" top line: Revenue for industrial companies,
+    # Gross Income for banks (kept as separate extracted fields, but
+    # ratios like margin/growth need *a* top line to divide by).
+    revenue = record.get("revenue") if record.get("revenue") is not None else record.get("gross_income")
     net_profit = record.get("net_profit")
     total_assets = record.get("total_assets")
     total_equity = record.get("total_equity")
@@ -35,7 +38,10 @@ def compute_ratios_for_year(record: dict, prior_record: dict = None) -> dict:
 
     prior_assets = prior_record.get("total_assets") if prior_record else None
     prior_equity = prior_record.get("total_equity") if prior_record else None
-    prior_revenue = prior_record.get("revenue") if prior_record else None
+    prior_revenue = (
+        prior_record.get("revenue") if prior_record.get("revenue") is not None
+        else prior_record.get("gross_income")
+    ) if prior_record else None
     prior_eps = prior_record.get("eps") if prior_record else None
     prior_net_profit = prior_record.get("net_profit") if prior_record else None
 

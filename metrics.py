@@ -69,8 +69,17 @@ METRIC_PATTERNS = {
     "revenue": [
         r"^revenue\b",
         r"^turnover\b",
-        r"^gross income\b",
         r"^revenue from contracts with customers\b",
+    ],
+    # Bank-specific top line — kept SEPARATE from "revenue" on purpose.
+    # "Gross income" for a bank includes interest income, fee income
+    # etc. and is not comparable to an industrial company's Revenue/
+    # Turnover line - conflating them would misstate margins.
+    "gross_income": [
+        r"^gross income\b",
+    ],
+    "net_interest_income": [
+        r"^net interest income\b",
     ],
     "gross_profit": [
         r"^gross profit",
@@ -221,7 +230,8 @@ def detect_unit(page_text: str) -> str:
     return "unknown"
 
 
-def extract_metrics_from_page(page_text: str, page_number: int, stmt_type: str = "") -> dict:
+def extract_metrics_from_page(page_text: str, page_number: int, stmt_type: str = "",
+                                industry: str = "industrial") -> dict:
     """Run the direct-match extraction for every metric against one
     statement page's text. Returns metric_key -> Extraction.
 
@@ -307,6 +317,14 @@ def extract_metrics_from_page(page_text: str, page_number: int, stmt_type: str =
     if debt_matches:
         cur_sum = sum(v[0] for v in debt_matches)
         prev_sum = sum(v[1] for v in debt_matches if len(v) > 1)
+        if industry == "bank":
+            debt_note = (f"Sum of {len(debt_matches)} borrowings/subordinated-debt line(s) — "
+                         f"deliberately EXCLUDES customer deposits (a bank's main funding "
+                         f"source, not conventional debt). Verify against the source lines "
+                         f"before using in leverage ratios.")
+        else:
+            debt_note = (f"Sum of {len(debt_matches)} borrowings-related line(s) — verify "
+                         f"manually, 'debt' definitions vary by company/industry.")
         results["total_debt"] = Extraction(
             metric="total_debt",
             current=cur_sum,
@@ -315,8 +333,7 @@ def extract_metrics_from_page(page_text: str, page_number: int, stmt_type: str =
             page=page_number,
             source_line=" | ".join(debt_lines),
             method="summed",
-            notes=f"Sum of {len(debt_matches)} borrowings-related line(s) — verify manually, "
-                  f"'debt' definitions vary by company/industry.",
+            notes=debt_note,
         )
 
     return results
