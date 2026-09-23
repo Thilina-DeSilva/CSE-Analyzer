@@ -4,3 +4,4 @@ plotly
 pdfplumber
 pypdf
 python-docx
+reportlab

@@ -28,9 +28,10 @@ from report_builder import (
     build_markdown_report,
     METRIC_LABELS, RATIO_LABELS,
 )
-from education import GLOSSARY, BEGINNER_GUIDE, get_explanation
+from education import GLOSSARY, BEGINNER_GUIDE, PRE_BUY_GUIDE, get_explanation
 from valuation import compute_valuation, compute_position_size
 from red_flags import compute_red_flags
+from pre_buy import compute_pre_buy
 
 st.set_page_config(page_title="CSE Annual Report Analyzer", layout="wide")
 
@@ -114,9 +115,9 @@ if "with_ratios" in st.session_state:
     with st.expander("📚 New to reading annual reports? Click here to learn the basics", expanded=False):
         st.markdown(BEGINNER_GUIDE)
 
-    tab_table, tab_charts, tab_flags, tab_value, tab_verify, tab_download = st.tabs(
-        ["📋 5-Year Table", "📈 Charts", "🚩 Red Flags", "💰 Valuation & Sizing",
-         "⚠️ Verification", "⬇️ Download"]
+    tab_table, tab_charts, tab_flags, tab_prebuy, tab_value, tab_verify, tab_download = st.tabs(
+        ["📋 5-Year Table", "📈 Charts", "🚩 Red Flags", "🔍 Before You Buy",
+         "💰 Valuation & Sizing", "⚠️ Verification", "⬇️ Download"]
     )
 
     with tab_table:
@@ -142,6 +143,11 @@ if "with_ratios" in st.session_state:
                         st.markdown(f"**What it means:** {exp['plain']}")
                         if exp.get("watch_for"):
                             st.markdown(f"**Watch for:** {exp['watch_for']}")
+                        if exp.get("learn_more"):
+                            links_md = " · ".join(
+                                f"[{l['title']}]({l['url']})" for l in exp["learn_more"]
+                            )
+                            st.markdown(f"**Learn more:** {links_md}")
         st.dataframe(pd.DataFrame(table_rows).set_index("Metric"), use_container_width=True)
 
         st.subheader("Ratios")
@@ -164,6 +170,11 @@ if "with_ratios" in st.session_state:
                         st.markdown(f"**What it means:** {exp['plain']}")
                         if exp.get("watch_for"):
                             st.markdown(f"**Watch for:** {exp['watch_for']}")
+                        if exp.get("learn_more"):
+                            links_md = " · ".join(
+                                f"[{l['title']}]({l['url']})" for l in exp["learn_more"]
+                            )
+                            st.markdown(f"**Learn more:** {links_md}")
         st.dataframe(pd.DataFrame(ratio_rows).set_index("Ratio"), use_container_width=True)
 
         st.subheader("🔍 Look up a value's source")
@@ -226,6 +237,233 @@ if "with_ratios" in st.session_state:
                 st.markdown(f"{icon} **{f['title']}**")
                 st.caption(f["detail"])
 
+    with tab_prebuy:
+        st.caption(
+            "A structured pre-purchase review of the numbers we extracted. "
+            "This consolidates growth, profitability, strength, shareholder value, "
+            "valuation inputs, and risk patterns in one place. It is **not** a buy/sell signal."
+        )
+        with st.expander("📚 How to use this checklist (read this first)", expanded=False):
+            st.markdown(PRE_BUY_GUIDE)
+
+        # Reuse price from valuation if already entered in session, else local input
+        pb_price = st.number_input(
+            "Current share price (Rs.) — used for valuation block below",
+            min_value=0.0, step=1.0, value=0.0, key="prebuy_price",
+        )
+        pb = compute_pre_buy(with_ratios, share_price=pb_price)
+        explain_pb = st.toggle("🎓 Explain terms in this checklist", value=False, key="explain_prebuy")
+
+        status_icon = {"ok": "✅", "warn": "⚠️", "unknown": "❔"}
+
+        # ----- 1. Growth -----
+        st.subheader("1. Growth — multi-year CAGR")
+        g = pb["growth"]
+        gc1, gc2, gc3 = st.columns(3)
+        with gc1:
+            v = g.get("revenue_cagr_pct")
+            span = g.get("revenue_span_years") or 0
+            st.metric(
+                "Revenue CAGR",
+                f"{v:.1f}%" if v is not None else "—",
+                help=f"Over {span} year(s) of available data" if span else None,
+            )
+            if explain_pb:
+                exp = get_explanation("revenue_cagr")
+                st.caption(exp["plain"])
+                if exp.get("watch_for"):
+                    st.caption(f"**Watch for:** {exp['watch_for']}")
+        with gc2:
+            v = g.get("net_profit_cagr_pct")
+            span = g.get("net_profit_span_years") or 0
+            st.metric(
+                "Net Profit CAGR",
+                f"{v:.1f}%" if v is not None else "—",
+                help=f"Over {span} year(s)" if span else None,
+            )
+            if explain_pb:
+                exp = get_explanation("net_profit_cagr")
+                st.caption(exp["plain"])
+                if exp.get("watch_for"):
+                    st.caption(f"**Watch for:** {exp['watch_for']}")
+        with gc3:
+            v = g.get("eps_cagr_pct")
+            span = g.get("eps_span_years") or 0
+            st.metric(
+                "EPS CAGR",
+                f"{v:.1f}%" if v is not None else "—",
+                help=f"Over {span} year(s)" if span else None,
+            )
+            if explain_pb:
+                exp = get_explanation("eps_cagr")
+                st.caption(exp["plain"])
+                if exp.get("watch_for"):
+                    st.caption(f"**Watch for:** {exp['watch_for']}")
+        st.caption(
+            f"Based on {g.get('n_years_available', 0)} year(s) extracted. "
+            "CAGR needs a positive starting value and ≥2 years; otherwise shows —."
+        )
+
+        # ----- 2. Profitability -----
+        st.subheader("2. Profitability")
+        p = pb["profitability"]
+        pc1, pc2, pc3 = st.columns(3)
+        with pc1:
+            v = p.get("roe_pct")
+            st.metric("ROE", f"{v:.1f}%" if v is not None else "—",
+                      help=p.get("roe_basis") or None)
+            if explain_pb:
+                exp = get_explanation("roe_pct")
+                st.caption(exp["plain"])
+        with pc2:
+            v = p.get("roa_pct")
+            st.metric("ROA", f"{v:.1f}%" if v is not None else "—",
+                      help=p.get("roa_basis") or None)
+            if explain_pb:
+                exp = get_explanation("roa_pct")
+                st.caption(exp["plain"])
+        with pc3:
+            v = p.get("net_profit_margin_pct")
+            trend = p.get("margin_trend")
+            delta = {"up": "improving", "down": "declining", "flat": "stable"}.get(trend)
+            st.metric("Net Profit Margin", f"{v:.1f}%" if v is not None else "—",
+                      delta=delta if delta else None)
+            if explain_pb:
+                exp = get_explanation("net_profit_margin_pct")
+                st.caption(exp["plain"])
+
+        # ----- 3. Financial strength -----
+        st.subheader("3. Financial strength")
+        s = pb["strength"]
+        sc1, sc2, sc3 = st.columns(3)
+        with sc1:
+            v = s.get("debt_to_equity")
+            st.metric("Debt / Equity", f"{v:.2f}" if v is not None else "—")
+            if explain_pb:
+                exp = get_explanation("debt_to_equity")
+                st.caption(exp["plain"])
+        with sc2:
+            ocf = s.get("operating_cash_flow_latest")
+            st.metric("Operating Cash Flow (latest)", f"{ocf:,.0f}" if ocf is not None else "—")
+            if explain_pb:
+                exp = get_explanation("operating_cash_flow")
+                st.caption(exp["plain"])
+        with sc3:
+            st.metric("Interest Coverage", "Manual check")
+            st.caption(s.get("interest_coverage_note", ""))
+            if explain_pb:
+                exp = get_explanation("interest_coverage")
+                st.caption(exp["plain"])
+                if exp.get("watch_for"):
+                    st.caption(f"**Watch for:** {exp['watch_for']}")
+
+        # ----- 4. Shareholder value -----
+        st.subheader("4. Shareholder value")
+        sh = pb["shareholder"]
+        shc1, shc2, shc3 = st.columns(3)
+        with shc1:
+            v = sh.get("navps_latest")
+            st.metric("NAVPS (approx.)", f"{v:,.2f}" if v is not None else "—")
+            if explain_pb:
+                exp = get_explanation("navps")
+                st.caption(exp["plain"])
+                if exp.get("watch_for"):
+                    st.caption(f"**Watch for:** {exp['watch_for']}")
+        with shc2:
+            v = sh.get("navps_cagr_pct")
+            st.metric("NAVPS Growth (CAGR)", f"{v:.1f}%" if v is not None else "—")
+        with shc3:
+            v = sh.get("dps_latest")
+            st.metric("Dividend / Share (approx.)", f"{v:,.2f}" if v is not None else "—")
+            if explain_pb:
+                exp = get_explanation("dividend_per_share")
+                st.caption(exp["plain"])
+
+        # Dividend / NAVPS history table
+        hist_rows = []
+        for nav, dps in zip(sh.get("navps_by_year", []), sh.get("dps_by_year", [])):
+            hist_rows.append({
+                "Year": nav["year"],
+                "NAVPS (approx.)": f"{nav['navps']:,.2f}" if nav.get("navps") is not None else "—",
+                "DPS (approx.)": f"{dps['dps']:,.2f}" if dps.get("dps") is not None else "—",
+                "Dividend Paid (total)": (
+                    f"{dps['dividend_paid']:,.0f}" if dps.get("dividend_paid") is not None else "—"
+                ),
+            })
+        if hist_rows:
+            st.dataframe(pd.DataFrame(hist_rows).set_index("Year"), use_container_width=True)
+            st.caption(sh.get("dividend_history_note", ""))
+
+        # ----- 5. Valuation -----
+        st.subheader("5. Valuation")
+        val = pb["valuation"]
+        if val.get("share_price"):
+            vc1, vc2, vc3, vc4 = st.columns(4)
+            with vc1:
+                v = val.get("pe_ratio")
+                st.metric("P/E", f"{v:.2f}" if v is not None else "—")
+                if explain_pb:
+                    exp = get_explanation("pe_ratio")
+                    st.caption(exp["plain"])
+            with vc2:
+                v = val.get("pb_ratio")
+                st.metric("P/B", f"{v:.2f}" if v is not None else "—")
+                if explain_pb:
+                    exp = get_explanation("pb_ratio")
+                    st.caption(exp["plain"])
+            with vc3:
+                v = val.get("dividend_yield_pct")
+                st.metric("Dividend Yield", f"{v:.2f}%" if v is not None else "—")
+                if explain_pb:
+                    exp = get_explanation("dividend_yield_pct")
+                    st.caption(exp["plain"])
+            with vc4:
+                v = val.get("price_vs_navps")
+                st.metric("Price / NAVPS", f"{v:.2f}×" if v is not None else "—")
+                st.caption("Same idea as P/B when NAVPS ≈ book value per share.")
+        else:
+            st.info(val.get("note", "Enter a share price above to see valuation ratios."))
+
+        # ----- 6. Risk flags -----
+        st.subheader("6. Risk pattern flags")
+        for item in pb.get("risk_items", []):
+            icon = status_icon.get(item["status"], "•")
+            with st.container(border=True):
+                st.markdown(f"{icon} **{item['title']}**")
+                st.caption(item["detail"])
+
+        st.markdown("---")
+        st.caption(
+            "All figures above are derived from the same extracted annual-report numbers "
+            "shown in the other tabs. Always verify critical values against the source PDF "
+            "(use the Table → source lookup and the Verification tab)."
+        )
+
+        # ----- PDF export of this tab -----
+        st.markdown("### 📄 Download this checklist as a PDF")
+        st.caption(
+            "A standalone, printable PDF containing everything on this tab — separate from "
+            "the full 5-year financials report in the Download tab."
+        )
+        if st.button("Generate Pre-Buy PDF", key="gen_prebuy_pdf"):
+            import tempfile
+            from pre_buy_pdf import build_pre_buy_pdf
+            pdf_path = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf").name
+            build_pre_buy_pdf(company_name, pb, pdf_path,
+                               industry=with_ratios[-1].get("industry", "industrial"))
+            with open(pdf_path, "rb") as f:
+                st.session_state["prebuy_pdf_bytes"] = f.read()
+            os.unlink(pdf_path)
+
+        if "prebuy_pdf_bytes" in st.session_state:
+            st.download_button(
+                "⬇️ Download Pre-Buy Checklist (.pdf)",
+                st.session_state["prebuy_pdf_bytes"],
+                file_name=f"{company_name.replace(' ', '_')}_Pre_Buy_Checklist.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
+
     with tab_value:
         st.subheader("💰 Valuation (needs today's share price)")
         st.caption(
@@ -250,16 +488,25 @@ if "with_ratios" in st.session_state:
             with c1:
                 st.metric("P/E Ratio", f"{val['pe_ratio']:.2f}" if val["pe_ratio"] else "—")
                 if explain_val:
-                    st.caption(get_explanation("pe_ratio")["plain"])
+                    exp = get_explanation("pe_ratio")
+                    st.caption(exp["plain"])
+                    if exp.get("learn_more"):
+                        st.caption(" · ".join(f"[{l['title']}]({l['url']})" for l in exp["learn_more"]))
             with c2:
                 st.metric("P/B Ratio (approx.)", f"{val['pb_ratio']:.2f}" if val["pb_ratio"] else "—")
                 if explain_val:
-                    st.caption(get_explanation("pb_ratio")["plain"])
+                    exp = get_explanation("pb_ratio")
+                    st.caption(exp["plain"])
+                    if exp.get("learn_more"):
+                        st.caption(" · ".join(f"[{l['title']}]({l['url']})" for l in exp["learn_more"]))
             with c3:
                 st.metric("Dividend Yield (approx.)",
                           f"{val['dividend_yield_pct']:.2f}%" if val["dividend_yield_pct"] else "—")
                 if explain_val:
-                    st.caption(get_explanation("dividend_yield_pct")["plain"])
+                    exp = get_explanation("dividend_yield_pct")
+                    st.caption(exp["plain"])
+                    if exp.get("learn_more"):
+                        st.caption(" · ".join(f"[{l['title']}]({l['url']})" for l in exp["learn_more"]))
 
             if val["approximate_shares_outstanding"]:
                 unit_note = latest.get("_extractions", {}).get("net_profit", {}).get("unit", "")
