@@ -27,18 +27,35 @@ def compute_valuation(share_price: float, eps: float, total_equity: float,
     if eps and eps != 0:
         result["pe_ratio"] = share_price / eps
 
+    # Shares ≈ Net Profit / EPS. CRITICAL: net_profit and total_equity must
+    # be in the SAME unit (both Rs.'000 or both full Rs.). If the report
+    # uses Rs.'000, the share count is still correct because the scale
+    # cancels (profit_in_thousands / eps = shares). P/B also cancels.
+    # Dividend yield is only reliable when dividend_paid is in the same unit.
     if net_profit and eps and eps != 0:
-        shares_outstanding = net_profit / eps
+        shares_outstanding = abs(net_profit) / abs(eps)
         result["approximate_shares_outstanding"] = shares_outstanding
-        if total_equity and shares_outstanding:
+        if total_equity is not None and shares_outstanding:
             bvps = total_equity / shares_outstanding
-            result["book_value_per_share"] = bvps
+            # If equity was in Rs.'000 and eps in Rs, bvps is still in Rs.'000
+            # per share — that would make P/B nonsense. Heuristic: if |bvps|
+            # is absurdly large vs share price (>1000x), assume unit mismatch
+            # and scale equity down by 1000 (common Rs.'000 case).
+            if share_price > 0 and abs(bvps) > share_price * 500:
+                bvps = bvps / 1000.0
+                result["book_value_per_share"] = bvps
+                result["unit_heuristic_applied"] = True
+            else:
+                result["book_value_per_share"] = bvps
             if bvps != 0:
                 result["pb_ratio"] = share_price / bvps
-        if dividend_paid and shares_outstanding:
+        if dividend_paid is not None and shares_outstanding:
             dps = abs(dividend_paid) / shares_outstanding
+            if share_price > 0 and dps > share_price * 2:
+                # likely dividend was in Rs.'000 while we need Rs per share
+                dps = dps / 1000.0
             result["dividend_per_share_approx"] = dps
-            result["dividend_yield_pct"] = (dps / share_price) * 100
+            result["dividend_yield_pct"] = (dps / share_price) * 100 if share_price else None
 
     return result
 

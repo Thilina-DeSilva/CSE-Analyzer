@@ -27,6 +27,7 @@ METRIC_LABELS = {
     "total_debt": "Total Debt (borrowings, best-effort — see note)",
     "operating_cash_flow": "Operating Cash Flow",
     "dividend_paid": "Dividend Paid",
+    "credit_impairment": "Credit Impairment / ECL",
 }
 
 RATIO_LABELS = {

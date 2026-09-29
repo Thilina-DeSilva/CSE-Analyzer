@@ -59,6 +59,9 @@ class Extraction:
     source_line: str = ""
     method: str = "not_found"  # direct | derived | summed | not_found
     notes: str = ""
+    # Exact label text as printed on the statement line (useful when
+    # several aliases map to one normalized metric, e.g. credit_impairment).
+    original_label: str = ""
 
 
 # metric_key -> list of regex patterns tested against the (lowercased,
@@ -67,9 +70,11 @@ class Extraction:
 # "gross profit" should not swallow "operating profit" lines.
 METRIC_PATTERNS = {
     "revenue": [
-        r"^revenue\b",
-        r"^turnover\b",
         r"^revenue from contracts with customers\b",
+        r"^revenue\b",
+        # NOTE: "Turnover" is NOT an alias here. For companies like CTC,
+        # Turnover includes government levies and is much larger than Revenue.
+        # Turnover is only used as a last-resort fallback after the full pass.
     ],
     # Bank-specific top line — kept SEPARATE from "revenue" on purpose.
     # "Gross income" for a bank includes interest income, fee income
@@ -82,21 +87,42 @@ METRIC_PATTERNS = {
         r"^net interest income\b",
     ],
     "gross_profit": [
+        r"^gross profit\s*/\s*\(loss\)",
+        r"^gross profit/\(loss\)",
         r"^gross profit",
     ],
     "operating_profit": [
+        r"^operating profit\s*/\s*\(loss\)",
+        r"^operating profit/\(loss\)",
         r"^operating profit",
+        r"^net operating income",
         r"^results from operating activities",
         r"^profit from operations",
+        r"^operating profit before tax on financial services",
     ],
     "profit_before_tax": [
+        r"^profit\s*/\s*\(loss\)\s*before (income )?tax",
+        r"^profit/\(loss\) before (income )?tax",
+        r"^profit before income tax expense",
         r"^profit.*before (income )?tax",
         r"^\(?profit/\(loss\)\)? before tax",
+        r"^profit before taxation",
+        r"^profit/\(loss\) before taxation",
     ],
     "net_profit": [
-        r"^profit for the year",
+        r"^profit\s*/\s*\(loss\)\s*for the year",
         r"^profit/\(loss\) for the year",
+        r"^profit\s*/\s*\(loss\)\s*for the period",
+        r"^profit/\(loss\) for the period",
+        r"^profit for the year",
+        r"^profit for the period",
         r"^net profit for the year",
+        r"^net profit for the period",
+        r"^profit attributable to (equity holders|owners of the parent|shareholders|the bank)",
+        r"^profit/\(loss\) attributable to (equity holders|owners)",
+        r"^profit attributable to ordinary shareholders",
+        r"^profit attributable to equity holders of the bank",
+        r"^profit attributable to equity holders of the parent",
     ],
     "total_assets": [
         r"^total assets\b",
@@ -109,10 +135,14 @@ METRIC_PATTERNS = {
         r"^total equity and liabilities",
     ],
     "total_equity": [
+        r"^total shareholders['\u2019]? equity\b",
         r"^total equity\b(?! attributable)",
+        r"^total equity attributable",
     ],
     "cash_and_equivalents": [
         r"^cash and cash equivalents\b",
+        r"^cash and bank balances\b",
+        r"^cash in hand and at banks\b",
     ],
     "operating_cash_flow": [
         r"^net cash.*operating activities",
@@ -120,30 +150,123 @@ METRIC_PATTERNS = {
     "dividend_paid": [
         r"^dividend paid to shareholders",
         r"^dividends? paid\b",
+        r"^dividend$|^dividends$",  # equity statement "Dividend" line
     ],
 }
 
+# Which statement type each metric is allowed to match on. Metrics not
+# listed here are unrestricted (checked on every page type). This
+# exists because of a real bug we hit: "net_profit" matched a stray
+# "Profit for the year" line inside the Statement of Changes in Equity,
+# which gets pulled in as a continuation page of the Balance Sheet -
+# and because it was recorded as a "direct" match, a CORRECT net_profit
+# found later on the real income statement couldn't overwrite it (our
+# merge rule keeps the first direct match). Restricting P&L concepts to
+# income-statement-type pages stops them from ever being eligible to
+# match there in the first place.
+RESTRICT_TO_STMT_TYPE = {
+    "revenue": "income_statement",
+    "gross_income": "income_statement",
+    "net_interest_income": "income_statement",
+    "gross_profit": "income_statement",
+    "operating_profit": "income_statement",
+    "profit_before_tax": "income_statement",
+    "net_profit": "income_statement",
+    "total_assets": "balance_sheet",
+    "total_liabilities": "balance_sheet",
+    "total_equity_and_liabilities": "balance_sheet",
+    "total_equity": "balance_sheet",
+    "cash_and_equivalents": "balance_sheet",
+    "operating_cash_flow": "cash_flow",
+    # dividend_paid is deliberately NOT restricted - it legitimately
+    # appears on the Cash Flow statement (financing activities) OR the
+    # Statement of Changes in Equity, and we want to catch either.
+}
+
+# Credit Impairment / ECL — ONE normalized metric for banks (and any
+# company that reports loan/asset impairment). Patterns are ordered
+# most-specific / total-line FIRST so we prefer a reported "Net
+# impairment charge" over a component line such as "Impairment on
+# loans and advances". We never sum multiple impairment lines
+# (would double-count when the total already includes the components).
+# Matching is restricted to the income statement (see extract path).
+CREDIT_IMPAIRMENT_PATTERNS = [
+    r"^impairment\s+charge\s*/\s*\(reversal\)\s+for\s+loans",
+    r"^impairment\s+charge\s*/\s*\(reversal\)",
+    r"^impairment\s+charges?\s*/\s*\(reversals?\)",
+    r"^less[:\s]+impairment\s+charge",
+    # Prefer explicit net / total lines (CSE bank P&Ls vary a lot)
+    r"^net\s+impairment\s+(charge|charges|loss|losses)\b",
+    r"^net\s+impairment\s*\(charge\)/?\(?(reversal|write[- ]?back)\)?",
+    r"^net\s+impairment\s+(charge|charges)\s*/\s*(reversal|write[- ]?back)",
+    r"^net\s+credit\s+impairment\b",
+    r"^total\s+impairment\s+(charge|charges|loss|losses)\b",
+    # Common Sri Lankan bank wording
+    r"^impairment\s+charges?\s+for\s+loans?\s+and\s+other\s+losses\b",
+    r"^impairment\s+charges?\s+for\s+loans?\b",
+    r"^impairment\s+(charge|charges|loss|losses)\s+on\s+loans?\s+and\s+advances?\b",
+    r"^impairment\s+(charge|charges|loss|losses)\s+on\s+loans?\b",
+    r"^impairment\s+of\s+loans?\s+and\s+advances?\b",
+    r"^impairment\s+of\s+financial\s+assets?\b",
+    r"^impairment\s+(charge|charges|loss|losses)\s+on\s+financial\s+assets?\b",
+    r"^impairment\s+(charge|charges)\s*/\s*(reversal|write[- ]?back)",
+    r"^impairment\s*\(charge\)/?\(?(reversal|write[- ]?back)\)?",
+    r"^expected\s+credit\s+loss(es)?\b",
+    r"^net\s+expected\s+credit\s+loss(es)?\b",
+    r"^expected\s+credit\s+loss(es)?\s+(charge|charges|allowance)\b",
+    r"^credit\s+impairment\s+(charge|charges|loss|losses)?\b",
+    r"^provision\s+for\s+(loan\s+)?impairment\b",
+    r"^provision\s+for\s+(credit\s+)?losses\b",
+    r"^loan\s+loss\s+provision\b",
+    r"^allowance\s+for\s+(expected\s+)?credit\s+loss(es)?\b",
+    r"^impairment\s+(charge|charges|loss|losses)\b",
+    r"^impairment\s+on\s+loans?\s+and\s+advances?\b",
+    # Compact / OCR-tolerant
+    r"^ecl\b",
+    r"^impairm[ae]nt\s+(charge|charges|loss|losses)\b",
+]
+
 # EPS/DPS use the decimal token pass instead.
 EPS_PATTERNS = [
-    r"^basic earnings per (ordinary )?share",
     r"^basic/diluted earnings/\(loss\) per share",
+    r"^basic\s*/\s*diluted earnings/\(loss\) per share",
+    r"^basic earnings/\(loss\) per share",
+    r"^basic earnings per (ordinary )?share",
+    r"^earnings/\(loss\) per share",
     r"^earnings per share",
+    r"^basic\s*\(rs\.?\)",
+    r"^-\s*basic\s*\(rs\.?\)",
+    r"^basic\s*eps\b",
+    r"^diluted earnings per (ordinary )?share",
 ]
 
 # Lines to SUM (not just take one) for a best-effort Debt figure.
 # Flagged as needing manual verification - "debt" is defined
 # inconsistently across industries (esp. banks vs non-financial firms).
+# Prefer specific lines. Bare "borrowings" is last and only used if nothing
+# more specific matched — and we de-dupe by skipping lines that look like
+# sub-totals already covered (see extract path).
 DEBT_PATTERNS = [
-    r"interest bearing loans and borrowings",
-    r"interest-bearing borrowings",
-    r"borrowings",  # unanchored - safe now that this only runs on balance_sheet text
+    r"interest[- ]bearing loans? and borrowings",
+    r"^loans and borrowings\b",
+    r"interest[- ]bearing borrowings",
     r"debt securities issued",
-    r"subordinated liabilities",
+    r"subordinated (liabilities|debt)",
+    r"bank (overdrafts?|loans?|borrowings)",
+    r"long[- ]term borrowings",
+    r"short[- ]term borrowings",
+    r"lease liabilities",
+    r"^total\s+borrowings\b",
+    r"^borrowings\b",
 ]
 
 
 def _clean_line_start(line: str) -> str:
-    return STRIP_PREFIXES.sub("", line.strip())
+    s = line.strip()
+    s = STRIP_PREFIXES.sub("", s)
+    # Drop leading note/ref numbers: "12 Impairment..." / "12. Impairment..." / "(12) Impairment..."
+    s = re.sub(r"^\(?\d{1,3}\)?\.?\s+", "", s)
+    return s
 
 
 # A token counts as "numeric-ish" (part of the trailing values region of
@@ -219,13 +342,21 @@ def _parse_decimal_tokens(line: str) -> list:
 
 def detect_unit(page_text: str) -> str:
     low = page_text.lower()
-    if "rs. \u2019000" in low or "rs.\u2019000" in low or "rs. '000" in low or "rs.’000" in page_text.lower():
+    # Common CSE wordings for thousands
+    if any(x in low for x in (
+        "rs. \u2019000", "rs.\u2019000", "rs. '000", "rs.’000", "rs.'000",
+        "rupees thousands", "rupee thousands", "lkr '000", "lkr thousands",
+        "amounts in sri lanka rupees thousands",
+        "(all amounts in sri lanka rupees thousands)",
+    )):
         return "LKR_thousand"
-    if re.search(r"rs\.?\s*['\u2019]000", page_text, re.IGNORECASE):
+    if re.search(r"rs\.?\s*['\u2019`]?000", page_text, re.IGNORECASE):
         return "LKR_thousand"
-    if re.search(r"rs\.?\s*mn\b|rs\.?\s*million", low):
+    if re.search(r"in\s+thousands", low) and ("rupee" in low or "rs" in low or "lkr" in low):
+        return "LKR_thousand"
+    if re.search(r"rs\.?\s*mn\b|rs\.?\s*million|rupees? million", low):
         return "LKR_million"
-    if "rs." in low:
+    if "rs." in low or "lkr" in low:
         return "LKR"
     return "unknown"
 
@@ -268,6 +399,9 @@ def extract_metrics_from_page(page_text: str, page_number: int, stmt_type: str =
 
     results = {}
     for metric, patterns in METRIC_PATTERNS.items():
+        restrict = RESTRICT_TO_STMT_TYPE.get(metric)
+        if restrict and stmt_type and restrict != stmt_type:
+            continue
         raw_line, values = _search(patterns, lines, _parse_money_tokens)
         if values is None:
             raw_line, values = _search(patterns, joined_lines, _parse_money_tokens)
@@ -282,57 +416,157 @@ def extract_metrics_from_page(page_text: str, page_number: int, stmt_type: str =
                 method="direct",
             )
 
-    # EPS (decimal pass)
-    for raw_line in lines:
-        line = _clean_line_start(raw_line)
-        low = line.lower()
-        for pat in EPS_PATTERNS:
-            if re.search(pat, low):
-                values = _parse_decimal_tokens(line)
-                if values:
-                    results["eps"] = Extraction(
-                        metric="eps",
-                        current=values[0],
-                        previous=values[1] if len(values) > 1 else None,
-                        unit="LKR_per_share",
-                        page=page_number,
-                        source_line=raw_line.strip(),
-                        method="direct",
-                    )
+    # Turnover fallback: only if Revenue was not found (industrial companies
+    # that report a single "Turnover" top line without a separate Revenue line).
+    if "revenue" not in results and stmt_type in ("", "income_statement"):
+        raw_line, values = _search([r"^turnover\b"], lines, _parse_money_tokens)
+        if values is None:
+            raw_line, values = _search([r"^turnover\b"], joined_lines, _parse_money_tokens)
+        if values:
+            results["revenue"] = Extraction(
+                metric="revenue",
+                current=values[0],
+                previous=values[1] if len(values) > 1 else None,
+                unit=unit,
+                page=page_number,
+                source_line=raw_line.strip(),
+                method="direct",
+                notes="No separate 'Revenue' line — used Turnover as top-line proxy.",
+                original_label="Turnover",
+            )
+
+    # EPS (decimal pass) - restricted to income-statement-type pages for
+    # the same reason as the P&L metrics above: "per share" figures also
+    # appear on the Statement of Changes in Equity and in notes, and we
+    # don't want a stray match there to block the real one.
+    if stmt_type in ("", "income_statement"):
+        for raw_line in lines:
+            line = _clean_line_start(raw_line)
+            low = line.lower()
+            for pat in EPS_PATTERNS:
+                if re.search(pat, low):
+                    values = _parse_decimal_tokens(line)
+                    if values:
+                        results["eps"] = Extraction(
+                            metric="eps",
+                            current=values[0],
+                            previous=values[1] if len(values) > 1 else None,
+                            unit="LKR_per_share",
+                            page=page_number,
+                            source_line=raw_line.strip(),
+                            method="direct",
+                        )
+                    break
+            if "eps" in results:
                 break
-        if "eps" in results:
-            break
+
+    # Credit Impairment / ECL — income statement preferred (profit impact).
+    # Search by PATTERN priority first (not line order) so a "Net impairment
+    # charge" wins over a later component line on the same page. Never sum.
+    if stmt_type in ("", "income_statement"):
+        impairment_hit = None  # (pat_index, raw_line, values, matched_label)
+        for raw_line in lines:
+            line = _clean_line_start(raw_line)
+            low = line.lower()
+            for pat_idx, pat in enumerate(CREDIT_IMPAIRMENT_PATTERNS):
+                m = re.search(pat, low)
+                if m:
+                    values = _parse_money_tokens(line)
+                    if values:
+                        if impairment_hit is None or pat_idx < impairment_hit[0]:
+                            # Capture the matched phrase as original_label
+                            label = m.group(0).strip()
+                            # Prefer the human-readable start of the line
+                            # up to the first number-ish token
+                            label_full = re.split(
+                                r"\s+\(?-?\d{1,3}(?:,\d{3})+", line, maxsplit=1
+                            )[0].strip(" .:-")
+                            impairment_hit = (pat_idx, raw_line, values, label_full or label)
+                    break  # one pattern per line is enough
+        if impairment_hit is None:
+            # Fallback: wrapped label across two physical lines
+            for raw_line in joined_lines:
+                line = _clean_line_start(raw_line)
+                low = line.lower()
+                for pat_idx, pat in enumerate(CREDIT_IMPAIRMENT_PATTERNS):
+                    m = re.search(pat, low)
+                    if m:
+                        values = _parse_money_tokens(line)
+                        if values:
+                            if impairment_hit is None or pat_idx < impairment_hit[0]:
+                                label_full = re.split(
+                                    r"\s+\(?-?\d{1,3}(?:,\d{3})+", line, maxsplit=1
+                                )[0].strip(" .:-")
+                                impairment_hit = (
+                                    pat_idx, raw_line, values, label_full or m.group(0).strip()
+                                )
+                        break
+        if impairment_hit is not None:
+            _, raw_line, values, orig_label = impairment_hit
+            results["credit_impairment"] = Extraction(
+                metric="credit_impairment",
+                current=values[0],
+                previous=values[1] if len(values) > 1 else None,
+                unit=unit,
+                page=page_number,
+                source_line=raw_line.strip(),
+                method="direct",
+                original_label=orig_label,
+                notes=(
+                    f"Normalized as Credit Impairment / ECL. "
+                    f"Original statement label: «{orig_label}». "
+                    f"Single line preferred — components are not summed to avoid double-counting."
+                ),
+            )
 
     # Debt (summed, flagged) - balance sheet only, see docstring above.
-    debt_matches = []
-    debt_lines = []
+    # Strategy: collect candidate lines, then if any line looks like a TOTAL
+    # ("total borrowings", line-start "Borrowings" alone), prefer that single
+    # line over summing components — avoids double-counting parent + children.
+    debt_matches = []  # list of (values, raw_line, is_total_like)
     for raw_line in (lines if stmt_type == "balance_sheet" else []):
         line = _clean_line_start(raw_line)
         low = line.lower()
         if any(re.search(pat, low) for pat in DEBT_PATTERNS):
             values = _parse_money_tokens(line)
             if values:
-                debt_matches.append(values)
-                debt_lines.append(raw_line.strip())
+                is_total = bool(re.search(
+                    r"^(total\s+)?borrowings\b|^total\s+interest[- ]bearing|^total\s+debt\b",
+                    low,
+                ))
+                debt_matches.append((values, raw_line.strip(), is_total))
     if debt_matches:
-        cur_sum = sum(v[0] for v in debt_matches)
-        prev_sum = sum(v[1] for v in debt_matches if len(v) > 1)
-        if industry == "bank":
-            debt_note = (f"Sum of {len(debt_matches)} borrowings/subordinated-debt line(s) — "
-                         f"deliberately EXCLUDES customer deposits (a bank's main funding "
-                         f"source, not conventional debt). Verify against the source lines "
-                         f"before using in leverage ratios.")
+        totals = [m for m in debt_matches if m[2]]
+        if totals:
+            # Prefer the largest total-like line (most complete)
+            best = max(totals, key=lambda m: abs(m[0][0]) if m[0] else 0)
+            chosen = [best]
+            method_note = "total-line preferred (components not summed)"
         else:
-            debt_note = (f"Sum of {len(debt_matches)} borrowings-related line(s) — verify "
-                         f"manually, 'debt' definitions vary by company/industry.")
+            chosen = debt_matches
+            method_note = f"sum of {len(chosen)} component line(s)"
+        cur_sum = sum(m[0][0] for m in chosen)
+        # Previous: only include lines that actually have a prior-year column
+        prev_vals = [m[0][1] for m in chosen if len(m[0]) > 1]
+        prev_sum = sum(prev_vals) if prev_vals and len(prev_vals) == len(chosen) else (
+            sum(prev_vals) if prev_vals else None
+        )
+        debt_lines = [m[1] for m in chosen]
+        if industry == "bank":
+            debt_note = (f"{method_note.capitalize()} — deliberately EXCLUDES customer "
+                         f"deposits (a bank's main funding source, not conventional debt). "
+                         f"Verify against the source lines before using in leverage ratios.")
+        else:
+            debt_note = (f"{method_note.capitalize()} — verify manually; "
+                         f"'debt' definitions vary by company/industry.")
         results["total_debt"] = Extraction(
             metric="total_debt",
             current=cur_sum,
-            previous=prev_sum if any(len(v) > 1 for v in debt_matches) else None,
+            previous=prev_sum,
             unit=unit,
             page=page_number,
             source_line=" | ".join(debt_lines),
-            method="summed",
+            method="summed" if len(chosen) > 1 else "direct",
             notes=debt_note,
         )
 
@@ -360,3 +594,13 @@ def derive_missing_metrics(all_results: dict) -> dict:
                       "computed from Total Equity & Liabilities minus Total Equity.",
             )
     return all_results
+
+
+def unit_to_scale(unit: str) -> float:
+    """How many rupees one reported unit represents. Used to normalise
+    mixed units across years and to scale share-count approximations."""
+    if unit == "LKR_thousand":
+        return 1_000.0
+    if unit == "LKR_million":
+        return 1_000_000.0
+    return 1.0  # LKR or unknown — treat as face value

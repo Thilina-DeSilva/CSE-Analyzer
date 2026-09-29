@@ -112,6 +112,14 @@ GLOSSARY = {
             {"title": "Investopedia: Dividend", "url": "https://www.investopedia.com/terms/d/dividend.asp"},
         ],
     },
+    "credit_impairment": {
+        "plain": "The charge (expense) recognised in the income statement for expected or actual credit losses on loans and other financial assets. Banks often label this 'Expected Credit Loss (ECL)', 'Impairment charge', or 'Provision for impairment'. It reduces profit for the year.",
+        "watch_for": "A sharp rise in impairment can signal deteriorating loan quality. Compare to the loan book size and to prior years. This metric is normalised from several possible statement labels — check the original label in the source lookup.",
+        "learn_more": [
+            {"title": "Investopedia: Expected Credit Loss (ECL)", "url": "https://www.investopedia.com/terms/e/expected-credit-loss.asp"},
+            {"title": "Investopedia: Loan Loss Provision", "url": "https://www.investopedia.com/terms/l/loanlossprovision.asp"},
+        ],
+    },
     # ratios
     "net_profit_margin_pct": {
         "plain": "Net Profit ÷ Revenue (or Gross Income for banks) × 100. Out of every Rs. 100 earned, how much ends up as actual profit.",

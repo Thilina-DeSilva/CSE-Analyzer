@@ -1,82 +1,130 @@
 """
-V1: Find the financial statement pages inside a huge annual report PDF,
-and return CLEAN, correctly-ordered text for just those pages.
+Find financial-statement pages inside annual / interim report PDFs.
 
-Design (two stages), based on what we learned testing on real reports:
+Two stages:
+  1) Fast pypdf scan for money-dense pages with statement keywords
+  2) pdfplumber confirmation that the keyword is a page heading
 
-  STAGE 1 - cheap full-document scan (pypdf)
-    pypdf is fast and uses flat memory (~90MB even on 558 pages), but its
-    text often comes out of reading order on complex multi-column layouts
-    (headers can land in the wrong place in the string). We only use it
-    here to find CANDIDATE pages, by:
-      a) counting how many "money-shaped" numbers (e.g. 45,200,123) are
-         on the page - real statement pages are dense with these, a
-         mention in a table of contents or audit report is not.
-      b) checking for statement-specific keywords anywhere on the page.
-
-  STAGE 2 - confirm with pdfplumber, but ONLY on the small shortlist
-    pdfplumber preserves reading order properly, which is what we need to
-    confirm the heading is really at the TOP of the page (a true
-    statement page) rather than mentioned mid-paragraph. Critically, we
-    only open pdfplumber on ~10-30 candidate pages, not the whole
-    document - this avoids the memory blow-up we hit on the first try
-    (pdfplumber leaked to 2.8GB and got OOM-killed iterating all 558
-    pages of a bank report).
+Ranking prefers the PRIMARY face statements (Group LKR, full scale)
+over decade summaries, segment notes, US$ annexes, and highlights.
 """
+
+from __future__ import annotations
 
 import re
 import pypdf
 import pdfplumber
 
 MONEY_PATTERN = re.compile(r"\b\d{1,3}(?:,\d{3})+\b")
+# Numbers that look like full LKR amounts (at least 1,000,000)
+LARGE_MONEY = re.compile(r"\b\d{1,3}(?:,\d{3}){2,}\b")
 
-# keyword groups used to guess a page's statement type in stage 1.
-# matching is "any of these substrings appear on the page" - loose on
-# purpose, stage 2 does the precise check.
 KEYWORDS = {
-    "income_statement": ["income statement", "statement of profit or loss", "statement of profit and loss"],
-    "balance_sheet": ["statement of financial position", "balance sheet"],
-    "cash_flow": ["statement of cash flows", "cash flow statement"],
-    "comprehensive_income": ["statement of comprehensive income"],
+    "income_statement": [
+        "income statement",
+        "statement of profit or loss",
+        "statement of profit and loss",
+        "statement of profit or loss and other comprehensive income",
+        "consolidated statement of profit or loss",
+    ],
+    "balance_sheet": [
+        "statement of financial position",
+        "balance sheet",
+        "consolidated statement of financial position",
+        "statement of financial position (continued)",
+    ],
+    "cash_flow": [
+        "statement of cash flows",
+        "cash flow statement",
+        "statement of cash flow",
+        "consolidated statement of cash flows",
+    ],
+    "comprehensive_income": [
+        "statement of comprehensive income",
+        "other comprehensive income",
+    ],
 }
 
-# pages containing these are deprioritised - they're real statements but
-# NOT the primary group LKR ones we want (US$ annexes, decade summaries,
-# interim/quarterly summaries duplicate the same heading text).
-DEPRIORITISE = ["annex", "us dollar", "decade at a glance", "summarised", "summarized", "interim financial"]
+# Hard deprioritise — these are almost never the primary face statement
+DEPRIORITISE = [
+    "annex",
+    "us dollar",
+    "u.s. dollar",
+    "decade at a glance",
+    "ten year",
+    "10 year",
+    "ten-year",
+    "5 year summary",
+    "five year summary",
+    "five-year summary",
+    "summarised",
+    "summarized",
+    "interim financial",
+    "financial highlights",
+    "at a glance",
+    "highlights of the year",
+    "value added statement",
+    "statement of value added",
+    "quarterly analysis",
+    "segment information",
+    "notes to the financial statements",
+]
 
-MIN_MONEY_NUMBERS = 15  # a real statement page is dense with these
+# Soft signals that a page is the REAL face statement
+PRIMARY_SIGNALS = [
+    r"year ended",
+    r"for the year ended",
+    r"as at \d",
+    r"as at 3[01]",
+    r"group\s+company",
+    r"company\s+group",
+    r"rs\.?\s*['\u2019`]?000",
+    r"all amounts in",
+]
+
+MIN_MONEY_NUMBERS = 8
 
 
 def _stage1_candidates(pdf_path: str) -> dict:
-    """pypdf pass: return candidate page indices per statement type,
-    each tagged with a score and whether it looks deprioritised."""
     reader = pypdf.PdfReader(pdf_path)
+    n_pages = len(reader.pages)
     candidates = {key: [] for key in KEYWORDS}
 
     for i, page in enumerate(reader.pages):
         text = page.extract_text() or ""
-        low = text.lower()
+        low = " ".join(text.lower().split())  # collapse newlines for keyword match
         money_count = len(MONEY_PATTERN.findall(text))
         if money_count < MIN_MONEY_NUMBERS:
             continue
 
+        large_count = len(LARGE_MONEY.findall(text))
         deprioritised = any(flag in low for flag in DEPRIORITISE)
+
+        # Prefer middle-of-report zone (after covers/TOC, before deep notes)
+        # Typical primary statements sit ~30–70% through the PDF.
+        position = i / max(n_pages, 1)
+        position_penalty = 0
+        if position < 0.05:
+            position_penalty = 2  # covers / early TOC
+        elif position > 0.85:
+            position_penalty = 1  # deep notes / annexes
+
+        primary_hits = sum(1 for p in PRIMARY_SIGNALS if re.search(p, low))
 
         for key, kws in KEYWORDS.items():
             if any(kw in low for kw in kws):
                 candidates[key].append({
                     "page": i,
                     "money_count": money_count,
+                    "large_count": large_count,
                     "deprioritised": deprioritised,
+                    "position_penalty": position_penalty,
+                    "primary_hits": primary_hits,
                 })
     return candidates
 
 
 def _stage2_confirm(pdf_path: str, candidates: dict) -> dict:
-    """pdfplumber pass: open only the candidate pages, check the anchor
-    phrase is near the top (a real heading), return clean text for
-    confirmed pages."""
     all_pages_needed = sorted({c["page"] for lst in candidates.values() for c in lst})
     if not all_pages_needed:
         return {key: [] for key in KEYWORDS}
@@ -93,19 +141,51 @@ def _stage2_confirm(pdf_path: str, candidates: dict) -> dict:
         for key, lst in candidates.items():
             for c in lst:
                 text = page_text_cache[c["page"]]
-                head = text[:120].lower()
+                # Collapse newlines so "Statement of\nFinancial Position" matches
+                head = " ".join(text[:900].lower().split())
                 is_heading = any(kw in head for kw in KEYWORDS[key])
-                if is_heading:
-                    confirmed[key].append({**c, "text": text})
+                if not is_heading:
+                    continue
+
+                # Extra reject: note pages that only mention the statement name
+                # deep in text but have "note" dense headers
+                note_density = head.count("note ")
+                if note_density >= 4 and c.get("primary_hits", 0) < 2:
+                    continue
+
+                # Balance sheet: require total assets or equity somewhere
+                has_assets = False
+                if key == "balance_sheet":
+                    low_full = text.lower()
+                    has_assets = "total assets" in low_full
+                    if not has_assets and "total equity" not in low_full:
+                        continue
+                c = {**c, "has_total_assets": has_assets}
+
+                # Income: require revenue/turnover or profit line
+                if key == "income_statement":
+                    low_full = text.lower()
+                    if not any(x in low_full for x in (
+                        "revenue", "turnover", "profit for the", "gross profit",
+                        "net interest income", "gross income",
+                    )):
+                        continue
+
+                confirmed[key].append({**c, "text": text})
 
     return confirmed
 
 
 def find_statement_pages(pdf_path: str, verbose: bool = False) -> dict:
     """
-    Main entry point. Returns, for each statement type, a ranked list of
-    confirmed pages (best first: not deprioritised, then by money density),
-    each with its clean extracted text ready for the next parsing step.
+    Ranked confirmed pages per statement type.
+    Sort key (best first):
+      1. not deprioritised
+      2. more primary header signals
+      3. lower position penalty
+      4. more large (full-scale) money tokens
+      5. more money tokens overall
+      6. earlier page as mild tie-break
     """
     candidates = _stage1_candidates(pdf_path)
     if verbose:
@@ -115,17 +195,24 @@ def find_statement_pages(pdf_path: str, verbose: bool = False) -> dict:
     confirmed = _stage2_confirm(pdf_path, candidates)
 
     for key, lst in confirmed.items():
-        lst.sort(key=lambda c: (c["deprioritised"], -c["money_count"]))
+        lst.sort(key=lambda c: (
+            c["deprioritised"],
+            -c.get("primary_hits", 0),
+            c.get("position_penalty", 0),
+            -int(c.get("has_total_assets", False)),  # BS pages with Total Assets first
+            -c.get("large_count", 0),
+            -c["money_count"],
+            c["page"],
+        ))
         if verbose:
             print(f"[stage2] {key}: {len(lst)} confirmed -> "
-                  f"{[c['page'] for c in lst]}")
+                  f"{[c['page'] for c in lst[:8]]}")
 
     return confirmed
 
 
 if __name__ == "__main__":
     import sys
-
     path = sys.argv[1]
     result = find_statement_pages(path, verbose=True)
     print()

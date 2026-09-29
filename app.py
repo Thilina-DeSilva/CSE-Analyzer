@@ -33,29 +33,107 @@ from valuation import compute_valuation, compute_position_size
 from red_flags import compute_red_flags
 from pre_buy import compute_pre_buy
 
-st.set_page_config(page_title="CSE Annual Report Analyzer", layout="wide")
-
-st.title("📊 CSE Annual Report Analyzer")
-st.caption(
-    "Upload multiple years of a company's annual report PDFs. Numbers are extracted "
-    "deterministically (no AI guessing at figures) and every value is traceable to its "
-    "exact source page and line."
+st.set_page_config(
+    page_title="CSE Annual Report Analyzer",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
+# ---- Visual design ----
+st.markdown("""
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+    html, body, [class*="css"]  {
+        font-family: 'DM Sans', system-ui, sans-serif;
+    }
+    .block-container { padding-top: 1.25rem; padding-bottom: 2rem; max-width: 1200px; }
+
+    h1 { font-weight: 700 !important; letter-spacing: -0.02em; }
+    h2, h3 { font-weight: 600 !important; }
+
+    div[data-testid="stMetric"] {
+        background: linear-gradient(180deg, #0f172a 0%, #1e293b 100%);
+        border: 1px solid #334155;
+        border-radius: 12px;
+        padding: 12px 16px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    }
+    div[data-testid="stMetric"] label { color: #94a3b8 !important; font-size: 0.8rem !important; }
+    div[data-testid="stMetric"] [data-testid="stMetricValue"] {
+        color: #f8fafc !important; font-family: 'JetBrains Mono', monospace; font-size: 1.35rem !important;
+    }
+    div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.8rem !important; }
+
+    .cse-hero {
+        background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 50%, #0f766e 100%);
+        border-radius: 16px; padding: 1.5rem 1.75rem; margin-bottom: 1.25rem;
+        color: #f1f5f9; border: 1px solid #334155;
+    }
+    .cse-hero h1 { color: #fff !important; margin: 0 0 0.35rem 0; font-size: 1.75rem; }
+    .cse-hero p { color: #cbd5e1; margin: 0; font-size: 0.95rem; }
+    .cse-badge {
+        display: inline-block; padding: 0.2rem 0.65rem; border-radius: 999px;
+        font-size: 0.75rem; font-weight: 600; margin-right: 0.4rem; margin-top: 0.5rem;
+    }
+    .badge-bank { background: #0ea5e9; color: #0c4a6e; }
+    .badge-ind { background: #a78bfa; color: #2e1065; }
+    .badge-unit { background: #34d399; color: #064e3b; }
+    .badge-warn { background: #fbbf24; color: #78350f; }
+
+    .cse-card {
+        border: 1px solid #e2e8f0; border-radius: 12px; padding: 1rem 1.15rem;
+        background: #fff; margin-bottom: 0.75rem;
+    }
+    [data-theme="dark"] .cse-card, .stApp[data-theme="dark"] .cse-card {
+        background: #1e293b; border-color: #334155;
+    }
+
+    div[data-testid="stTabs"] button {
+        font-weight: 500; font-size: 0.9rem;
+    }
+    div[data-testid="stDataFrame"] { border-radius: 10px; overflow: hidden; }
+
+    section[data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #0f172a 0%, #1e293b 100%);
+    }
+    section[data-testid="stSidebar"] * { color: #e2e8f0 !important; }
+    section[data-testid="stSidebar"] .stButton > button {
+        background: linear-gradient(90deg, #0d9488, #0891b2) !important;
+        color: white !important; border: none !important; font-weight: 600 !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("""
+<div class="cse-hero">
+  <h1>📊 CSE Annual Report Analyzer</h1>
+  <p>Upload multi-year annual report PDFs. Figures are extracted deterministically
+  (no AI guessing) and every value stays traceable to its source page and line.</p>
+</div>
+""", unsafe_allow_html=True)
+
 with st.sidebar:
-    st.header("1. Upload Annual Reports")
-    company_name = st.text_input("Company name (for the report title)", value="")
+    st.markdown("### 1 · Upload reports")
+    company_name = st.text_input("Company name", value="", placeholder="e.g. Commercial Bank")
     uploaded_files = st.file_uploader(
-        "Upload one or more annual report PDFs (any years, any order)",
+        "PDFs: annual · interim/quarterly financials · (commentary PDFs rarely have tables)",
         type=["pdf"],
         accept_multiple_files=True,
     )
-    analyze_clicked = st.button("🔍 ANALYZE REPORTS", type="primary", use_container_width=True,
-                                 disabled=not uploaded_files)
+    analyze_clicked = st.button(
+        "🔍  Analyze reports",
+        type="primary",
+        use_container_width=True,
+        disabled=not uploaded_files,
+    )
     if uploaded_files:
-        st.caption(f"{len(uploaded_files)} file(s) ready:")
+        st.caption(f"{len(uploaded_files)} file(s) queued")
         for f in uploaded_files:
             st.caption(f"• {f.name}")
+    st.markdown("---")
+    st.caption("Tip: mix annual reports + quarterly/interim financials. Performance commentaries (press releases) have few extractable tables.")
 
 if analyze_clicked:
     all_records = []
@@ -109,10 +187,71 @@ if "with_ratios" in st.session_state:
         st.warning("No data could be extracted from any uploaded file. See status above.")
         st.stop()
 
-    years = [r["year"] for r in with_ratios]
-    st.header(f"{company_name} — {years[0]}–{years[-1]}")
+    years = [r.get("period_label") or r["year"] for r in with_ratios]
+    year_keys = [r.get("period_key") or r["year"] for r in with_ratios]
+    latest = with_ratios[-1]
+    industry = latest.get("industry") or "industrial"
 
-    with st.expander("📚 New to reading annual reports? Click here to learn the basics", expanded=False):
+    # Unit consistency check across years
+    units_seen = set()
+    for r in with_ratios:
+        for ext in (r.get("_extractions") or {}).values():
+            u = (ext or {}).get("unit")
+            if u and u not in ("unknown", "LKR_per_share"):
+                units_seen.add(u)
+    mixed_units = len(units_seen) > 1
+    primary_unit = sorted(units_seen)[0] if units_seen else "unknown"
+
+    badge_ind = (
+        '<span class="cse-badge badge-bank">Bank / FI</span>'
+        if industry == "bank"
+        else '<span class="cse-badge badge-ind">Industrial</span>'
+    )
+    unit_label = {
+        "LKR_thousand": "Rs. '000",
+        "LKR_million": "Rs. million",
+        "LKR": "Rs. (full)",
+    }.get(primary_unit, primary_unit)
+    badge_unit = f'<span class="cse-badge badge-unit">Unit: {unit_label}</span>'
+    badge_warn = (
+        '<span class="cse-badge badge-warn">Mixed units across years — compare carefully</span>'
+        if mixed_units else ""
+    )
+
+    st.markdown(
+        f"## {company_name}  "
+        f"<span style='color:#64748b;font-weight:500;font-size:1.1rem'>{years[0]} → {years[-1]}</span><br>"
+        f"{badge_ind}{badge_unit}{badge_warn}",
+        unsafe_allow_html=True,
+    )
+
+    # ---- KPI strip (latest year) ----
+    lr = latest.get("_ratios") or {}
+    top_line = latest.get("revenue") if latest.get("revenue") is not None else latest.get("gross_income")
+    top_label = "Revenue" if latest.get("revenue") is not None else "Gross Income"
+    k1, k2, k3, k4, k5 = st.columns(5)
+    with k1:
+        st.metric(f"{top_label} ({latest['year']})", f"{top_line:,.0f}" if top_line is not None else "—")
+    with k2:
+        np_ = latest.get("net_profit")
+        st.metric("Net Profit", f"{np_:,.0f}" if np_ is not None else "—")
+    with k3:
+        v = lr.get("roe_pct")
+        st.metric("ROE", f"{v:.1f}%" if v is not None else "—")
+    with k4:
+        v = lr.get("net_profit_margin_pct")
+        st.metric("Net Margin", f"{v:.1f}%" if v is not None else "—")
+    with k5:
+        v = latest.get("eps")
+        st.metric("EPS", f"{v:.2f}" if v is not None else "—")
+
+    if mixed_units:
+        st.warning(
+            "Reports appear to use **different unit scales** (e.g. Rs.'000 vs full Rs.). "
+            "YoY growth and CAGRs can be distorted. Check the Verification tab and source lines."
+        )
+
+    with st.expander("📚 New to annual reports? Learn the basics", expanded=False):
         st.markdown(BEGINNER_GUIDE)
 
     tab_table, tab_charts, tab_flags, tab_prebuy, tab_value, tab_verify, tab_download = st.tabs(
@@ -132,9 +271,9 @@ if "with_ratios" in st.session_state:
                 v = r.get(key)
                 if v is not None:
                     any_present = True
-                    row[str(r["year"])] = f"{v:,.2f}" if key == "eps" else f"{v:,.0f}"
+                    row[str(r.get("period_label") or r["year"])] = f"{v:,.2f}" if key == "eps" else f"{v:,.0f}"
                 else:
-                    row[str(r["year"])] = "—"
+                    row[str(r.get("period_label") or r["year"])] = "—"
             if any_present:
                 table_rows.append(row)
                 if explain_mode:
@@ -159,9 +298,9 @@ if "with_ratios" in st.session_state:
                 v = r.get("_ratios", {}).get(key)
                 if v is not None:
                     any_present = True
-                    row[str(r["year"])] = f"{v:,.2f}"
+                    row[str(r.get("period_label") or r["year"])] = f"{v:,.2f}"
                 else:
-                    row[str(r["year"])] = "—"
+                    row[str(r.get("period_label") or r["year"])] = "—"
             if any_present:
                 ratio_rows.append(row)
                 if explain_mode:
@@ -188,9 +327,11 @@ if "with_ratios" in st.session_state:
         ext = rec.get("_extractions", {}).get(metric_choice) if rec else None
         if ext:
             badge = "✅ direct" if ext["method"] == "direct" else f"⚠️ {ext['method']}"
+            orig = ext.get("original_label") or ""
+            orig_bit = f" · Original label: «{orig}»" if orig else ""
             st.markdown(f"**{METRIC_LABELS[metric_choice]} — {year_choice}**: "
                         f"{ext['value']:,.2f}  \n"
-                        f"Method: {badge} · Page: {ext['page']} · Unit: {ext['unit']}")
+                        f"Method: {badge} · Page: {ext['page']} · Unit: {ext['unit']}{orig_bit}")
             if ext["notes"]:
                 st.info(ext["notes"])
             st.code(ext["source_line"], language=None)
@@ -198,28 +339,79 @@ if "with_ratios" in st.session_state:
             st.caption("No value extracted for this metric/year.")
 
     with tab_charts:
-        df = pd.DataFrame(with_ratios)
+        df = pd.DataFrame([{k: v for k, v in r.items() if not k.startswith("_")} for r in with_ratios])
         df["year"] = df["year"].astype(str)
+        df = df.set_index("year")
 
-        chart_pairs = [
-            ("revenue", "Revenue"), ("net_profit", "Net Profit"),
-            ("total_assets", "Total Assets"), ("eps", "EPS"),
-        ]
+        # Adaptive chart set: banks get NII + impairment; industrials get revenue
+        if industry == "bank":
+            chart_pairs = [
+                ("gross_income", "Gross Income"),
+                ("net_interest_income", "Net Interest Income"),
+                ("net_profit", "Net Profit"),
+                ("credit_impairment", "Credit Impairment / ECL"),
+                ("total_assets", "Total Assets"),
+                ("eps", "EPS"),
+            ]
+        else:
+            chart_pairs = [
+                ("revenue", "Revenue"),
+                ("net_profit", "Net Profit"),
+                ("operating_profit", "Operating Profit"),
+                ("total_assets", "Total Assets"),
+                ("operating_cash_flow", "Operating Cash Flow"),
+                ("eps", "EPS"),
+            ]
+
+        try:
+            import plotly.express as px
+            use_plotly = True
+        except ImportError:
+            use_plotly = False
+
         c1, c2 = st.columns(2)
         for i, (key, label) in enumerate(chart_pairs):
-            if key in df.columns:
-                target = c1 if i % 2 == 0 else c2
-                with target:
-                    st.caption(label)
-                    st.bar_chart(df.set_index("year")[[key]])
+            if key not in df.columns or df[key].isna().all():
+                continue
+            target = c1 if i % 2 == 0 else c2
+            with target:
+                st.caption(label)
+                series = df[[key]].dropna()
+                if use_plotly and not series.empty:
+                    fig = px.bar(series, y=key, labels={key: label, "year": "Year"})
+                    fig.update_layout(
+                        margin=dict(l=10, r=10, t=10, b=10), height=260,
+                        showlegend=False, paper_bgcolor="rgba(0,0,0,0)",
+                        plot_bgcolor="rgba(0,0,0,0)",
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.bar_chart(series)
 
-        st.caption("ROE / ROA / Net Margin (%)")
+        st.caption("Profitability ratios (%)")
         ratio_df = pd.DataFrame([
             {"year": str(r["year"]), **{k: r["_ratios"].get(k) for k in
              ["roe_pct", "roa_pct", "net_profit_margin_pct"]}}
             for r in with_ratios
         ]).set_index("year")
-        st.line_chart(ratio_df)
+        # Force every column to a uniform float dtype. Without this, a
+        # ratio that's None for every year in the series (e.g. ROA when
+        # prior-year Total Assets was never found) keeps pandas' inferred
+        # "object" dtype instead of float64, while the other columns are
+        # float64 - Plotly Express's wide-form melt then fails with
+        # "columns of different type" because it can't concatenate them.
+        ratio_df = ratio_df.apply(pd.to_numeric, errors="coerce")
+        ratio_df = ratio_df.dropna(axis=1, how="all")  # drop ratios with zero data at all
+
+        if ratio_df.empty:
+            st.caption("Not enough data to chart profitability ratios yet.")
+        elif use_plotly:
+            fig = px.line(ratio_df, markers=True, labels={"value": "%", "variable": "Ratio"})
+            fig.update_layout(margin=dict(l=10, r=10, t=10, b=10), height=300,
+                              paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.line_chart(ratio_df)
 
     with tab_flags:
         st.caption(
@@ -247,10 +439,13 @@ if "with_ratios" in st.session_state:
             st.markdown(PRE_BUY_GUIDE)
 
         # Reuse price from valuation if already entered in session, else local input
+        default_pb = float(st.session_state.get("share_price", 0.0) or 0.0)
         pb_price = st.number_input(
             "Current share price (Rs.) — used for valuation block below",
-            min_value=0.0, step=1.0, value=0.0, key="prebuy_price",
+            min_value=0.0, step=0.5, value=default_pb, key="prebuy_price",
         )
+        if pb_price:
+            st.session_state["share_price"] = pb_price
         pb = compute_pre_buy(with_ratios, share_price=pb_price)
         explain_pb = st.toggle("🎓 Explain terms in this checklist", value=False, key="explain_prebuy")
 
@@ -472,7 +667,9 @@ if "with_ratios" in st.session_state:
             "own thinking, not a recommendation."
         )
         latest = with_ratios[-1]
-        price = st.number_input("Current share price (Rs.)", min_value=0.0, step=1.0, value=0.0)
+        default_price = float(st.session_state.get("share_price", 0.0) or 0.0)
+        price = st.number_input("Current share price (Rs.)", min_value=0.0, step=0.5, value=default_price)
+        st.session_state["share_price"] = price
 
         if price > 0:
             val = compute_valuation(
