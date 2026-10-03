@@ -15,8 +15,11 @@ and source line, and anything summed/derived is visibly flagged.
 
 import os
 import io
+import re
 import json
+import pickle
 import tempfile
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -32,6 +35,12 @@ from education import GLOSSARY, BEGINNER_GUIDE, PRE_BUY_GUIDE, get_explanation
 from valuation import compute_valuation, compute_position_size
 from red_flags import compute_red_flags
 from pre_buy import compute_pre_buy
+from advanced import (
+    compute_extra_series, sections_have_data, CONSTRUCTION_SECTIONS,
+)
+import advanced_ui
+
+APP_VERSION = "2026.10.04-bank-credit"  # bump when shipping fixes
 
 st.set_page_config(
     page_title="CSE Annual Report Analyzer",
@@ -106,21 +115,96 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown("""
+st.markdown(f"""
 <div class="cse-hero">
   <h1>📊 CSE Annual Report Analyzer</h1>
   <p>Upload multi-year annual report PDFs. Figures are extracted deterministically
   (no AI guessing) and every value stays traceable to its source page and line.</p>
+  <p style="margin-top:0.6rem;font-size:0.8rem;opacity:0.85">Build <code>{APP_VERSION}</code> · multi-company tabs · Dialog EPS/NAVPS</p>
 </div>
 """, unsafe_allow_html=True)
 
+# ---------------------------------------------------------------------------
+# Multi-company workspace (browser-tab style)
+# Each analyzed company is stored under session_state["companies"][id]
+# so loading a new company does NOT overwrite previous ones.
+# ---------------------------------------------------------------------------
+WORKSPACE_FILE = Path.home() / ".cse_analyzer" / "workspace.pkl"
+
+
+def _load_workspace() -> dict:
+    """Reload open company tabs saved by a previous run/refresh."""
+    try:
+        if WORKSPACE_FILE.exists():
+            with open(WORKSPACE_FILE, "rb") as fh:
+                data = pickle.load(fh)
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+
+def _save_workspace():
+    """Persist open tabs so a browser refresh / restart does not wipe them."""
+    try:
+        WORKSPACE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(WORKSPACE_FILE, "wb") as fh:
+            pickle.dump(st.session_state["companies"], fh)
+    except Exception:
+        pass
+
+
+if "companies" not in st.session_state:
+    st.session_state["companies"] = _load_workspace()  # id -> {name, with_ratios, per_file_status, share_price}
+if "active_company_id" not in st.session_state:
+    _ids = list(st.session_state["companies"].keys())
+    st.session_state["active_company_id"] = _ids[-1] if _ids else None
+
+
+def _activate(cid):
+    """Make a company the active tab (keeps sidebar + top tab bar in sync)."""
+    st.session_state["active_company_id"] = cid
+    if cid is None:
+        st.session_state.pop("company_tab_bar", None)
+    else:
+        st.session_state["company_tab_bar"] = cid
+
+
+def _guess_company_name(files) -> str:
+    """Best-effort name from the first PDF's first pages ('... PLC' / '... Limited')."""
+    try:
+        import pypdf
+        for f in files:
+            reader = pypdf.PdfReader(io.BytesIO(f.getvalue()))
+            for pg in reader.pages[:3]:
+                txt = pg.extract_text() or ""
+                m = re.search(r"([A-Z][A-Za-z0-9&.\-]*(?:\s+(?:of|and|&|the|[A-Z][A-Za-z0-9&.\-]*)){0,5}\s+(?:PLC|Plc|Limited|LIMITED|Ltd))", txt)
+                if m:
+                    return " ".join(m.group(1).split())
+    except Exception:
+        pass
+    return ""
+
+
+def _company_id_for(name: str) -> str:
+    """Reuse the id of an existing tab with the same name (case-insensitive) so
+    re-analyzing UPDATES it; any different name gets its own new tab."""
+    base = (name or "Company").strip() or "Company"
+    for existing_id, cdata in st.session_state["companies"].items():
+        if cdata["name"].strip().lower() == base.lower():
+            return existing_id
+    return base
+
+
 with st.sidebar:
     st.markdown("### 1 · Upload reports")
-    company_name = st.text_input("Company name", value="", placeholder="e.g. Commercial Bank")
+    company_name = st.text_input("Company name", value="", placeholder="e.g. Dialog Axiata (blank = auto-detect)")
     uploaded_files = st.file_uploader(
         "PDFs: annual · interim/quarterly financials · (commentary PDFs rarely have tables)",
         type=["pdf"],
         accept_multiple_files=True,
+        key="uploader_main",
     )
     analyze_clicked = st.button(
         "🔍  Analyze reports",
@@ -132,8 +216,33 @@ with st.sidebar:
         st.caption(f"{len(uploaded_files)} file(s) queued")
         for f in uploaded_files:
             st.caption(f"• {f.name}")
+
     st.markdown("---")
-    st.caption("Tip: mix annual reports + quarterly/interim financials. Performance commentaries (press releases) have few extractable tables.")
+    st.markdown("### 2 · Open companies (tabs)")
+    st.caption("Each Analyze keeps a separate tab — switch without overwriting.")
+    companies = st.session_state["companies"]
+    if not companies:
+        st.info("No company tabs yet. Enter a name, upload PDFs, click Analyze.")
+    else:
+        for cid, cdata in list(companies.items()):
+            cols = st.columns([4, 1])
+            is_active = st.session_state["active_company_id"] == cid
+            label = f"{'● ' if is_active else ''}{cdata['name']}"
+            if cols[0].button(label, key=f"sel_{cid}", use_container_width=True,
+                              type="primary" if is_active else "secondary"):
+                _activate(cid)
+                st.rerun()
+            if cols[1].button("✕", key=f"close_{cid}", help=f"Close {cdata['name']}"):
+                del st.session_state["companies"][cid]
+                if st.session_state["active_company_id"] == cid:
+                    remaining = list(st.session_state["companies"].keys())
+                    _activate(remaining[-1] if remaining else None)
+                _save_workspace()
+                st.rerun()
+        st.caption(f"{len(companies)} company tab(s) open — switch without losing data.")
+
+    st.markdown("---")
+    st.caption("Tip: mix annual reports + quarterly/interim financials. Each Analyze adds/updates a company tab; others stay open.")
 
 if analyze_clicked:
     all_records = []
@@ -165,14 +274,61 @@ if analyze_clicked:
     merged, dropped = merge_yearly_records(all_records)
     with_ratios = compute_ratios_for_series(merged)
 
+    name = (company_name or "").strip()
+    if not name:
+        name = _guess_company_name(uploaded_files)
+    if not name:
+        name = f"Company {len(st.session_state['companies']) + 1}"
+    # Same name -> update that tab; different/blank name -> NEW tab (never overwrites).
+    cid = _company_id_for(name)
+
+    prev_price = 0.0
+    if cid in st.session_state["companies"]:
+        prev_price = float(st.session_state["companies"][cid].get("share_price") or 0.0)
+
+    st.session_state["companies"][cid] = {
+        "name": name,
+        "with_ratios": with_ratios,
+        "per_file_status": per_file_status,
+        "share_price": prev_price,
+    }
+    _activate(cid)
+    _save_workspace()
+    # Back-compat keys used by older code paths
     st.session_state["with_ratios"] = with_ratios
     st.session_state["per_file_status"] = per_file_status
-    st.session_state["company_name"] = company_name or "Company"
+    st.session_state["company_name"] = name
+    st.session_state["share_price"] = prev_price
 
-if "with_ratios" in st.session_state:
-    with_ratios = st.session_state["with_ratios"]
-    per_file_status = st.session_state["per_file_status"]
-    company_name = st.session_state["company_name"]
+# Browser-style tab bar across the top: one tab per analyzed company.
+_open_ids = list(st.session_state["companies"].keys())
+if _open_ids:
+    if st.session_state.get("active_company_id") not in _open_ids:
+        _activate(_open_ids[-1])
+    if st.session_state.get("company_tab_bar") not in _open_ids:
+        st.session_state["company_tab_bar"] = st.session_state["active_company_id"]
+    _picked = st.radio(
+        "Open companies", _open_ids,
+        format_func=lambda i: "📈 " + st.session_state["companies"][i]["name"],
+        horizontal=True, key="company_tab_bar", label_visibility="collapsed",
+    )
+    st.session_state["active_company_id"] = _picked
+
+# Resolve active company workspace
+_active_id = st.session_state.get("active_company_id")
+_active = st.session_state["companies"].get(_active_id) if _active_id else None
+
+if _active is not None:
+    with_ratios = _active["with_ratios"]
+    per_file_status = _active["per_file_status"]
+    company_name = _active["name"]
+    # Keep legacy keys in sync for any code still reading them
+    st.session_state["with_ratios"] = with_ratios
+    st.session_state["per_file_status"] = per_file_status
+    st.session_state["company_name"] = company_name
+    st.session_state["share_price"] = _active.get("share_price") or 0.0
+
+if _active is not None:
 
     with st.expander("📄 Per-file processing status", expanded=False):
         for s in per_file_status:
@@ -254,10 +410,21 @@ if "with_ratios" in st.session_state:
     with st.expander("📚 New to annual reports? Learn the basics", expanded=False):
         st.markdown(BEGINNER_GUIDE)
 
-    tab_table, tab_charts, tab_flags, tab_prebuy, tab_value, tab_verify, tab_download = st.tabs(
+    # Extra metrics (Advanced / Banking / Construction / Investigate) are
+    # calculated on top of the existing data; nothing above is modified.
+    with_extra = compute_extra_series(with_ratios)
+    extra_labels = ["🔵 Advanced"]
+    if industry == "bank":
+        extra_labels.append("🏦 Banking")
+    if any(r.get(k) is not None for r in with_extra for k in ("contract_assets", "contract_liabilities")):
+        extra_labels.append("🏗️ Construction")
+    extra_labels.append("🧭 Things to Investigate")
+
+    tab_table, tab_charts, tab_flags, tab_prebuy, tab_value, tab_verify, tab_download, *extra_tabs = st.tabs(
         ["📋 5-Year Table", "📈 Charts", "🚩 Red Flags", "🔍 Before You Buy",
-         "💰 Valuation & Sizing", "⚠️ Verification", "⬇️ Download"]
+         "💰 Valuation & Sizing", "⚠️ Verification", "⬇️ Download"] + extra_labels
     )
+    extra_tab_by_label = dict(zip(extra_labels, extra_tabs))
 
     with tab_table:
         explain_mode = st.toggle("🎓 Explain these terms in plain language", value=False)
@@ -442,10 +609,15 @@ if "with_ratios" in st.session_state:
         default_pb = float(st.session_state.get("share_price", 0.0) or 0.0)
         pb_price = st.number_input(
             "Current share price (Rs.) — used for valuation block below",
-            min_value=0.0, step=0.5, value=default_pb, key="prebuy_price",
+            min_value=0.0, step=0.5, value=default_pb, key=f"prebuy_price_{st.session_state.get('active_company_id')}",
         )
         if pb_price:
             st.session_state["share_price"] = pb_price
+            if st.session_state.get("active_company_id") and st.session_state["active_company_id"] in st.session_state.get("companies", {}):
+                _c = st.session_state["companies"][st.session_state["active_company_id"]]
+            if _c.get("share_price") != pb_price:
+                _c["share_price"] = pb_price
+                _save_workspace()
         pb = compute_pre_buy(with_ratios, share_price=pb_price)
         explain_pb = st.toggle("🎓 Explain terms in this checklist", value=False, key="explain_prebuy")
 
@@ -668,16 +840,28 @@ if "with_ratios" in st.session_state:
         )
         latest = with_ratios[-1]
         default_price = float(st.session_state.get("share_price", 0.0) or 0.0)
-        price = st.number_input("Current share price (Rs.)", min_value=0.0, step=0.5, value=default_price)
+        price = st.number_input("Current share price (Rs.)", min_value=0.0, step=0.5, value=default_price,
+                                key=f"val_price_{st.session_state.get('active_company_id')}")
         st.session_state["share_price"] = price
+        if st.session_state.get("active_company_id") and st.session_state["active_company_id"] in st.session_state.get("companies", {}):
+            _c = st.session_state["companies"][st.session_state["active_company_id"]]
+            if _c.get("share_price") != price:
+                _c["share_price"] = price
+                _save_workspace()
 
         if price > 0:
+            # Prefer profit attributable to equity holders (excludes NCI) —
+            # that is the base published EPS uses, so share-count approx is tighter.
+            np_for_val = latest.get("profit_attributable")
+            if np_for_val is None:
+                np_for_val = latest.get("net_profit")
             val = compute_valuation(
                 share_price=price,
                 eps=latest.get("eps"),
                 total_equity=latest.get("total_equity"),
-                net_profit=latest.get("net_profit"),
+                net_profit=np_for_val,
                 dividend_paid=latest.get("dividend_paid"),
+                dividend_per_share_direct=latest.get("dividend_per_share"),
             )
             explain_val = st.toggle("🎓 Explain these terms", value=False, key="explain_val")
 
@@ -787,7 +971,7 @@ if "with_ratios" in st.session_state:
                             mime="text/markdown", use_container_width=True)
 
         csv_buf = io.StringIO()
-        pd.DataFrame(with_ratios).drop(columns=["_extractions", "_ratios"], errors="ignore").to_csv(csv_buf, index=False)
+        pd.DataFrame(with_ratios).drop(columns=["_extractions", "_ratios", "_extra"], errors="ignore").to_csv(csv_buf, index=False)
         st.download_button("⬇️ Download Data (.csv)", csv_buf.getvalue(),
                             file_name=f"{company_name.replace(' ', '_')}_data.csv",
                             mime="text/csv", use_container_width=True)
@@ -800,5 +984,15 @@ if "with_ratios" in st.session_state:
         st.markdown("---")
         st.markdown("**Preview:**")
         st.markdown(md)
+    with extra_tab_by_label["🔵 Advanced"]:
+        advanced_ui.render_advanced(with_extra)
+    if "🏦 Banking" in extra_tab_by_label:
+        with extra_tab_by_label["🏦 Banking"]:
+            advanced_ui.render_bank(with_extra)
+    if "🏗️ Construction" in extra_tab_by_label:
+        with extra_tab_by_label["🏗️ Construction"]:
+            advanced_ui.render_construction(with_extra)
+    with extra_tab_by_label["🧭 Things to Investigate"]:
+        advanced_ui.render_investigate(with_extra)
 else:
     st.info("👈 Upload one or more annual report PDFs in the sidebar, then click **ANALYZE REPORTS**.")

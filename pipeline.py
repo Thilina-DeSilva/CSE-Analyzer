@@ -11,6 +11,7 @@ from find_statements import find_statement_pages
 from metrics import extract_metrics_from_page, derive_missing_metrics, Extraction
 from years import detect_years, detect_period
 from industry import detect_industry
+from bank_credit import BANK_CREDIT_KEYS
 
 
 def process_report(pdf_path: str, verbose: bool = False) -> dict:
@@ -63,6 +64,9 @@ def process_report(pdf_path: str, verbose: bool = False) -> dict:
                 is_same = any(s in head for s in same_stmt)
                 is_other = (
                     "independent auditor" in head
+                    or "notes to the" in head
+                    or "general information" in head
+                    or (not is_same and ("comprehensive income" in head or "changes in equity" in head))
                     or "notes to the financial statements" in head
                     or (stmt_type != "balance_sheet" and "financial position" in head and not is_same)
                     or (stmt_type != "cash_flow" and "statement of cash flows" in head and not is_same)
@@ -119,6 +123,24 @@ def process_report(pdf_path: str, verbose: bool = False) -> dict:
                 if "changes in equity" in c["text"][:250].lower():
                     continue
                 page_num, text = c["page"], c["text"]
+                # Dialog-style reports split the Statement of Comprehensive Income
+                # over two pages: P&L on the first, then profit attributable,
+                # EPS and DPS on a continuation page. Pull that page in too.
+                if page_num + 1 < len(pdf.pages):
+                    nxt = pdf.pages[page_num + 1].extract_text() or ""
+                    pdf.pages[page_num + 1].flush_cache()
+                    nxt_l = nxt.lower()
+                    nxt_sq = "".join(nxt_l.split())
+                    # a continuation page has no top-line row of its own; a page that
+                    # does is a separate statement (e.g. the quarter-only P&L in an interim)
+                    own_pl = ("revenue" in nxt_sq[:900] or "turnover" in nxt_sq[:900])
+                    if (not own_pl
+                        and ("earnings per share" in nxt_l or "attributable to" in nxt_l
+                         or "per share" in nxt_l or "earningspershare" in nxt_sq)
+                            and ("comprehensive income" in nxt_l[:600] or "income statement" in nxt_l[:600]
+                                 or "profit or loss" in nxt_l[:600])):
+                        text = text + "\n" + nxt
+                        pages_used.setdefault("income_statement_pages", []).extend([page_num, page_num + 1])
                 page_metrics = extract_metrics_from_page(text, page_num, stmt_type="income_statement",
                                                            industry=industry)
                 for k, v in page_metrics.items():
@@ -129,6 +151,22 @@ def process_report(pdf_path: str, verbose: bool = False) -> dict:
                 have_bottomline = all_metrics.get("net_profit")
                 if have_topline and have_bottomline:
                     break
+
+    # Bank credit quality (Stage 1/2/3 loans, impairment allowance, NPL). These sit in
+    # the loan notes, not on the face statements, so they get their own page scan.
+    # A failure here must never break the core extraction.
+    if industry == "bank":
+        try:
+            from bank_credit import extract_bank_credit
+            unit_hint = next((m.unit for m in all_metrics.values() if m.unit != "unknown"), "unknown")
+            credit = extract_bank_credit(pdf_path, default_unit=unit_hint,
+                                         net_loans=all_metrics.get("net_loans"))
+            for k, v in credit.items():
+                all_metrics.setdefault(k, v)
+            if credit:
+                pages_used["bank_credit"] = sorted({v.page for v in credit.values() if v.page is not None})
+        except Exception as e:  # noqa: BLE001
+            pages_used["bank_credit_error"] = str(e)
 
     all_metrics = derive_missing_metrics(all_metrics)
 
@@ -194,7 +232,13 @@ def to_yearly_records(result: dict) -> list:
             "method": ext.method, "source_line": ext.source_line, "notes": ext.notes,
             "original_label": getattr(ext, "original_label", "") or "",
         }
-        if ext.previous is not None and yp is not None:
+        # Interim balance sheets compare against the last YEAR-END (e.g. 31 Dec 2025),
+        # not the same quarter a year earlier, so that column must not be filed
+        # under the prior-year Q1/H1 period. Flow metrics (P&L, cash flow) are fine.
+        is_point_in_time = (ptype != "FY"
+                            and (ext.page == (result.get("pages_used") or {}).get("balance_sheet")
+                                 or key in BANK_CREDIT_KEYS))
+        if ext.previous is not None and yp is not None and not is_point_in_time:
             prev_record[key] = ext.previous
             prev_record["_extractions"][key] = {
                 "value": ext.previous, "unit": ext.unit, "page": ext.page,
@@ -216,7 +260,7 @@ def print_report(result: dict):
     print(f"{'Metric':<28}{'Current':>18}{'Previous':>18}  Unit          Method    Page")
     print("-" * 100)
     for key, ext in result["metrics"].items():
-        fmt = ",.2f" if key in ("eps", "dps") else ",.0f"
+        fmt = ",.2f" if key in ("eps", "dps", "dividend_per_share", "navps") else ",.0f"
         cur = f"{ext.current:{fmt}}" if ext.current is not None else "—"
         prev = f"{ext.previous:{fmt}}" if ext.previous is not None else "—"
         print(f"{key:<28}{cur:>18}{prev:>18}  {ext.unit:<13} {ext.method:<9} {ext.page}")

@@ -39,6 +39,18 @@ Then open the local URL it prints (usually http://localhost:8501).
    - **⚠️ Verification**: everything that was summed or derived rather than matched directly
      (e.g. Total Debt, Total Liabilities when no single line exists), flagged for manual
      spot-checking, plus a list of any metric not found at all.
+   - **🔵 Advanced**: detailed profitability (EBIT/EBITDA, margins, tax rate, interest coverage), cash
+     flow (FCF, OCF/Net Profit), leverage & liquidity, working-capital days, share structure and dividend
+     analysis, 3Y/5Y CAGRs, and a history view for any metric. Calculated automatically from the
+     extracted statements; a `—` means an input line wasn't found.
+   - **🏦 Banking** (appears automatically for banks) and **🏗️ Construction** (appears when contract
+     assets/liabilities are found): sector metrics such as loan growth, loans/deposits, cost-to-income,
+     contract assets vs revenue. The Banking tab includes a **Bank credit-quality group**: gross loans,
+     Stage 1/2/3 loans and %, Stage 3 impairment and coverage, total loan impairment, cost of risk,
+     NPL / impaired loans, and the ECL provision charge.
+   - **🧭 Things to Investigate**: cross-metric prompts (profit up but cash down, debt outpacing equity,
+     dilution, margin pressure, receivables/contract assets outrunning revenue, dividend cuts). Never a
+     buy/sell signal.
    - **⬇️ Download**: get the full 5-year report as Markdown, CSV, or JSON (with sources).
      Separately, the Pre-Buy Checklist tab has its own PDF export.
 
@@ -62,6 +74,12 @@ Then open the local URL it prints (usually http://localhost:8501).
 - `valuation.py` — P/E, P/B, Dividend Yield, NAVPS/DPS approximation, position sizing
 - `pre_buy.py` — assembles the Pre-Buy Checklist tab's data
 - `pre_buy_pdf.py` — renders the Pre-Buy Checklist as a standalone PDF (reportlab)
+- `extra_patterns.py` — extra statement line items (finance cost, tax, depreciation, capex, receivables,
+  inventories, payables, contract assets, bank loans/deposits, ...), merged into `metrics.py` additively
+- `bank_credit.py` — finds the loan-note / credit-quality pages of a bank report and extracts Stage 1/2/3 loans,
+  ECL allowance and NPL lines (these are not on the four face statements)
+- `advanced.py` — calculated Advanced/Bank/Construction metrics, CAGRs, and the Things-to-Investigate checks
+- `advanced_ui.py` — Streamlit rendering for the new tabs
 - `education.py` — the plain-language glossary, further-reading links, and beginner/pre-buy guides
 - `report_builder.py` — Markdown/CSV/JSON report generation for the full 5-year report
 

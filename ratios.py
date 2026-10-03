@@ -19,10 +19,52 @@ def _safe_div(a, b):
     return a / b
 
 
+def _period_type(rec: dict) -> str:
+    """Normalized period tag: FY | Q1 | Q2 | Q3 | Q4 | H1 | H2 | 9M | interim."""
+    return (rec.get("period_type") or "FY").upper()
+
+
+def periods_match(a: dict, b: dict) -> bool:
+    """True only when both records cover the same kind of period
+    (annual↔annual, Q1↔Q1, H1↔H1, …). Prevents absurd growth when a
+    Q1 interim is compared against a full-year annual."""
+    if a is None or b is None:
+        return False
+    return _period_type(a) == _period_type(b)
+
+
+def find_prior_comparable(records: list, index: int) -> dict | None:
+    """Return the same period one year earlier (FY→FY, Q1→Q1, H1→H1…).
+
+    Searches backward from `index` for a record with matching period_type
+    and year == current_year - 1. Returns None when no such peer exists
+    so growth / average-balance ratios stay blank rather than mixing
+    unlike periods.
+    """
+    if index <= 0 or index >= len(records):
+        return None
+    rec = records[index]
+    y = rec.get("year")
+    if y is None:
+        return None
+    pt = _period_type(rec)
+    target_year = y - 1
+    for j in range(index - 1, -1, -1):
+        o = records[j]
+        if _period_type(o) == pt and o.get("year") == target_year:
+            return o
+    return None
+
+
 def compute_ratios_for_year(record: dict, prior_record: dict = None) -> dict:
     """record: one year's metric dict (from to_yearly_records/merge).
-    prior_record: the previous year's record, if available, used for
-    average-balance ratios and growth rates."""
+    prior_record: the previous *matching-period* year's record, if
+    available, used for average-balance ratios and growth rates.
+    Callers must only pass a prior with the same period_type (use
+    find_prior_comparable); a mismatched prior is ignored.
+    """
+    if prior_record is not None and not periods_match(record, prior_record):
+        prior_record = None
     r = {}
 
     # "revenue-like" top line: Revenue for industrial companies,
@@ -102,10 +144,15 @@ def compute_ratios_for_year(record: dict, prior_record: dict = None) -> dict:
 def compute_ratios_for_series(merged_records: list) -> list:
     """merged_records: output of merge_yearly_records(), sorted oldest
     to newest. Returns the same records with a "_ratios" key added to
-    each (using the immediately preceding year as the prior record)."""
+    each.
+
+    Prior for growth / average balances is the same period one year
+    earlier (Annual→Annual, Q1→Q1, H1→H1, Q2→Q2). Unlike periods are
+    never compared, so a Q1 interim never produces growth vs a full year.
+    """
     out = []
     for i, rec in enumerate(merged_records):
-        prior = merged_records[i - 1] if i > 0 else None
+        prior = find_prior_comparable(merged_records, i)
         rec = dict(rec)
         rec["_ratios"] = compute_ratios_for_year(rec, prior)
         out.append(rec)

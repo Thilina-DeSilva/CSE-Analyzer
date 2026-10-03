@@ -28,6 +28,15 @@ METRIC_LABELS = {
     "operating_cash_flow": "Operating Cash Flow",
     "dividend_paid": "Dividend Paid",
     "credit_impairment": "Credit Impairment / ECL",
+    "gross_loans": "Gross Loans (bank)",
+    "stage1_loans": "Stage 1 Loans (bank)",
+    "stage2_loans": "Stage 2 Loans (bank)",
+    "stage3_loans": "Stage 3 Loans (bank)",
+    "stage1_impairment": "Stage 1 Impairment (bank)",
+    "stage2_impairment": "Stage 2 Impairment (bank)",
+    "stage3_impairment": "Stage 3 Impairment (bank)",
+    "total_loan_impairment": "Total Loan Impairment (bank)",
+    "npl_loans": "NPL / Impaired Loans, as reported (bank)",
 }
 
 RATIO_LABELS = {

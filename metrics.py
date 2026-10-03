@@ -124,32 +124,67 @@ METRIC_PATTERNS = {
         r"^profit attributable to equity holders of the bank",
         r"^profit attributable to equity holders of the parent",
     ],
+    # Prefer this for EPS/NAVPS share-count maths when present (excludes NCI).
+    "profit_attributable": [
+        r"^profit attributable to (equity holders|owners of the parent|shareholders|the bank)",
+        r"^profit/\(loss\) attributable to (equity holders|owners)",
+        r"^profit attributable to ordinary shareholders",
+        r"^profit attributable to equity holders of the bank",
+        r"^profit attributable to equity holders of the parent",
+        r"^equity holders of the parent\b",
+        r"^owners of the parent\b",
+        r"^equity holders of the company\b",
+        r"^owners of the company\b",
+        r"^profit\s*/\s*\(loss\)\s+for the year attributable to\b",
+        r"^profit / \(loss\) for the year attributable to\b",
+    ],
     "total_assets": [
         r"^total assets\b",
     ],
     "total_liabilities": [
-        r"^total liabilities\b(?!.{0,3}and equity)",
+        # Reject "Total Liabilities & Equity" / "Total Liabilities and Equity"
+        r"^total liabilities\b(?!\s*(&|and)\s*equity)",
     ],
     "total_equity_and_liabilities": [
         r"^total liabilities and equity",
+        r"^total liabilities\s*&\s*equity",
         r"^total equity and liabilities",
+        r"^total equity\s*&\s*liabilities",
     ],
     "total_equity": [
         r"^total shareholders['\u2019]? equity\b",
-        r"^total equity\b(?! attributable)",
+        r"^total equity attributable to equity holders",
         r"^total equity attributable",
+        r"^equity attributable to (equity holders|owners)",
+        r"^total equity\b(?!\s+and\s+liabilities)(?!\s+attributable)(?!\s*&)",
     ],
     "cash_and_equivalents": [
         r"^cash and cash equivalents\b",
+        r"^cash & cash equivalents\b",
         r"^cash and bank balances\b",
         r"^cash in hand and at banks\b",
+        r"^cash in hand and at bank\b",
     ],
     "operating_cash_flow": [
         r"^net cash.*operating activities",
+        # Broadened fallback: some reports wrap the label so "activities"
+        # lands on the NEXT physical line, after the numbers ("...operating
+        # 595,905,141 ... activities"), so "operating activities" never
+        # appears as a contiguous phrase even after our line-joining
+        # fallback. Safe to drop the "activities" requirement here because
+        # this metric is already restricted to cash_flow-type pages only
+        # (see RESTRICT_TO_STMT_TYPE below), so it can't accidentally
+        # match an unrelated "operating profit" line elsewhere.
+        r"^net cash.*\boperating\b",
     ],
     "dividend_paid": [
-        r"^dividend paid to shareholders",
-        r"^dividends? paid\b",
+        # Exclude Non-Controlling-Interest / minority dividend lines via
+        # negative lookahead - a real bug we hit: "Dividend Paid to
+        # Non-Controlling Interests" (a small sub-component) was matching
+        # before the real "Dividend paid to equity holders of the parent"
+        # line, because it happened to appear first on a merged page.
+        r"^dividend paid to (equity holders|shareholders|owners)\b",
+        r"^dividends? paid\b(?!.*non-controlling)(?!.*minority)(?!.*\bnci\b)",
         r"^dividend$|^dividends$",  # equity statement "Dividend" line
     ],
 }
@@ -172,6 +207,7 @@ RESTRICT_TO_STMT_TYPE = {
     "operating_profit": "income_statement",
     "profit_before_tax": "income_statement",
     "net_profit": "income_statement",
+    "profit_attributable": "income_statement",
     "total_assets": "balance_sheet",
     "total_liabilities": "balance_sheet",
     "total_equity_and_liabilities": "balance_sheet",
@@ -182,6 +218,14 @@ RESTRICT_TO_STMT_TYPE = {
     # appears on the Cash Flow statement (financing activities) OR the
     # Statement of Changes in Equity, and we want to catch either.
 }
+
+# Extra line items for Advanced / Banking / Construction modes. Purely
+# additive: new keys only, existing metrics above are never modified.
+from extra_patterns import EXTRA_METRIC_PATTERNS, EXTRA_RESTRICT_TO_STMT_TYPE  # noqa: E402
+for _k, _v in EXTRA_METRIC_PATTERNS.items():
+    METRIC_PATTERNS.setdefault(_k, _v)
+for _k, _v in EXTRA_RESTRICT_TO_STMT_TYPE.items():
+    RESTRICT_TO_STMT_TYPE.setdefault(_k, _v)
 
 # Credit Impairment / ECL — ONE normalized metric for banks (and any
 # company that reports loan/asset impairment). Patterns are ordered
@@ -227,9 +271,13 @@ CREDIT_IMPAIRMENT_PATTERNS = [
 ]
 
 # EPS/DPS use the decimal token pass instead.
+# Many CSE reports (e.g. JKH) print a header "Earnings per share" then a
+# short label line "Basic 19.1 13.12 15.13" — the short-label patterns
+# below catch that after the header context is confirmed.
 EPS_PATTERNS = [
     r"^basic/diluted earnings/\(loss\) per share",
     r"^basic\s*/\s*diluted earnings/\(loss\) per share",
+    r"^basic/diluted earnings per (ordinary )?share",  # e.g. "Basic/diluted earnings per share" (no "/(loss)")
     r"^basic earnings/\(loss\) per share",
     r"^basic earnings per (ordinary )?share",
     r"^earnings/\(loss\) per share",
@@ -238,6 +286,39 @@ EPS_PATTERNS = [
     r"^-\s*basic\s*\(rs\.?\)",
     r"^basic\s*eps\b",
     r"^diluted earnings per (ordinary )?share",
+    r"^basic earnings per ordinary share",
+    r"^diluted earnings per ordinary share",
+]
+
+# Short labels that only count as EPS when an "earnings per share" header
+# appears earlier on the same page (common multi-line Income Statement layout).
+EPS_SHORT_LABELS = [
+    r"^basic\b",
+    r"^diluted\b",
+    # Dialog-style: "Basic 32(a)(i) 2.44 (4.06)" after dash stripped
+    r"^basic\s+\d",
+    r"^diluted\s+\d",
+]
+
+# Direct "Dividend Per Share" line, when a report states it explicitly.
+# Strongly preferred over back-calculating DPS from total Dividend
+# Paid ÷ approximated shares outstanding (see valuation.py) - a stated
+# DPS is exact, the back-calculation is only ever an approximation.
+DPS_PATTERNS = [
+    r"^dividend per (ordinary )?share",
+    r"^dividends? per share",
+]
+
+# Direct Net Assets / Book Value per share (NAVPS). Prefer this over the
+# approximation Equity × EPS / Net Profit whenever the report states it.
+NAVPS_PATTERNS = [
+    r"^net assets? per (ordinary )?share",
+    r"^net asset value per (ordinary )?share",
+    r"^book value per (ordinary )?share",
+    r"^nav(?:ps)?\s*per\s*share",
+    r"^net assets? per share\*",
+    r"^net assets? per share\s*\(",  # "Net assets per share (Rs.)"
+    r"^adjusted net assets? per share",
 ]
 
 # Lines to SUM (not just take one) for a best-effort Debt figure.
@@ -261,9 +342,61 @@ DEBT_PATTERNS = [
 ]
 
 
+# PDF text extractors sometimes insert spaces inside large numbers
+# (e.g. "5 6,681,396" for 56,681,396 or "2 0,136,347" for 20,136,347).
+# Only join when:
+#   - the LEFT fragment is a SINGLE digit (OCR splits almost always leave
+#     one digit on the left; 2-digit left fragments are almost always note
+#     references like "42 8,701,652"), AND
+#   - the money token's first comma-group has only 1 digit (so combining
+#     yields a normal 2-digit thousands group).
+# This avoids gluing note numbers onto amounts (a real bug on JKH and
+# similar CSE multi-column statements).
+_BROKEN_MONEY = re.compile(
+    r"(?<![\d,])(\d)\s+(\d{1},\d{3}(?:,\d{3})+(?:\.\d+)?)"
+)
+
+
+# Also repair "5 .27" → "5.27" (space before decimal in EPS etc.)
+_BROKEN_DECIMAL = re.compile(r"(?<![\d.])(\d{1,3})\s+\.(\d{1,4})(?!\d)")
+
+
+# Space inserted just before a thousands-comma: "4 ,479,167" → "4,479,167"
+_SPACE_BEFORE_COMMA = re.compile(r"(\d)\s+,(\d{3})")
+
+
+# Note reference stuck to a money amount: "26(a)187,813,228" or "32(a)(i)2.44"
+# Common on Dialog / telecom CSE statements where Note column has no space.
+# Only strip the note token itself; keep every digit of the amount.
+_NOTE_GLUED_MONEY = re.compile(
+    r"(?<![\d,])\d{1,3}(?:\([a-z0-9ivx]+\))+\s*(?=\d{1,3}(?:,\d{3})+)"
+)
+_NOTE_GLUED_DECIMAL = re.compile(
+    r"(?<![\d.])\d{1,3}(?:\([a-z0-9ivx.,]+\))+\s*(?=\d+\.\d{1,4}\b)"
+)
+
+
+def _repair_broken_money(text: str) -> str:
+    """Collapse digit-space-money artifacts from PDF extraction and
+    separate note refs that were glued onto amounts (e.g. Dialog
+    '26(a)187,813,228' → '187,813,228')."""
+    text = _NOTE_GLUED_MONEY.sub(" ", text)
+    text = _NOTE_GLUED_DECIMAL.sub(" ", text)
+    text = _SPACE_BEFORE_COMMA.sub(r"\1,\2", text)
+    prev = None
+    while prev != text:
+        prev = text
+        text = _BROKEN_MONEY.sub(r"\1\2", text)
+    text = _BROKEN_DECIMAL.sub(r"\1.\2", text)
+    return text
+
+
 def _clean_line_start(line: str) -> str:
     s = line.strip()
     s = STRIP_PREFIXES.sub("", s)
+    # Leading bullets / dashes used on multi-line SCI layouts
+    # (e.g. Dialog: "- Basic 32(a)(i) 2.44 (4.06)" or "- owners of the Company …")
+    s = re.sub(r"^[-–—•·]+\s*", "", s)
     # Drop leading note/ref numbers: "12 Impairment..." / "12. Impairment..." / "(12) Impairment..."
     s = re.sub(r"^\(?\d{1,3}\)?\.?\s+", "", s)
     return s
@@ -277,26 +410,42 @@ _NUMERIC_ISH = re.compile(r"^\(?-?[\d,]+\.?\d*\)?$")
 
 def _trailing_numeric_tokens(line: str) -> list:
     """
-    Walk the line's tokens from the RIGHT and collect the trailing run
-    of numeric-ish tokens, stopping at the first real word. This is the
-    key fix for a bug we hit: labels sometimes contain a lone en-dash
-    as a typographic separator (e.g. "...amortised cost – other
-    borrowings"), which looks identical to a "–" used for a nil/blank
-    value cell. Scanning outside-in from the right means we stop at
-    "borrowings" (a real word) before ever reaching that label dash, so
-    it never gets mistaken for a value. A dash IS accepted once we're
-    already inside the trailing numeric run (i.e. a genuine blank cell
-    between real numbers).
+    Find the LONGEST contiguous run of numeric-ish tokens ANYWHERE in
+    the line (not necessarily at the very end), and return that run.
+
+    This replaced a simpler "scan from the right, stop at the first
+    real word" approach after a real bug: some reports have marginal
+    text (a certification/signature block, or a footnote reference)
+    bleeding onto the same line as real table data, because of how a
+    multi-column PDF layout flattens to plain text - e.g.
+      "Total assets 133,575,894,631 ... 57,687,617,280 prepared in
+       compliance with the"
+    Scanning from the right, trailing words like "prepared in
+    compliance with the" would immediately block the scan, so the real
+    numbers just before them were never even reached, and the metric
+    came up completely missing. Finding the longest numeric-ish run
+    anywhere in the line - instead of insisting it be the last thing
+    on the line - finds the real data regardless of what junk text
+    comes after it.
+
+    A lone dash used as a typographic separator inside a label (e.g.
+    "...amortised cost – other borrowings") is naturally excluded: as
+    a standalone token it forms its own isolated run of length 1,
+    which loses out to the much longer run of real values elsewhere on
+    the line. See test_metrics-style reasoning: this is strictly more
+    robust than the old right-anchored scan, not just a different
+    special case.
     """
     tokens = line.split()
-    trailing = []
-    for tok in reversed(tokens):
+    best_run, current_run = [], []
+    for tok in tokens:
         if _NUMERIC_ISH.match(tok) or NIL_TOKEN.match(tok):
-            trailing.append(tok)
+            current_run.append(tok)
+            if len(current_run) >= len(best_run):
+                best_run = current_run
         else:
-            break
-    trailing.reverse()
-    return trailing
+            current_run = []
+    return best_run
 
 
 def _parse_money_tokens(line: str) -> list:
@@ -340,6 +489,29 @@ def _parse_decimal_tokens(line: str) -> list:
     return out
 
 
+def _parse_decimal_tokens_keep_nil(line: str) -> list:
+    """Like _parse_decimal_tokens, but a lone dash (nil cell) counts as 0.0
+    so column positions are preserved. Needed for Dividend per share rows
+    such as "Dividend per share 32(b) 1.34 - 1.34 -" where the dash means
+    'no dividend that year' - dropping it shifted the Company column into
+    the Group prior-year slot."""
+    out = []
+    for tok in _trailing_numeric_tokens(line):
+        if NIL_TOKEN.match(tok):
+            out.append(0.0)
+            continue
+        if MONEY_TOKEN.fullmatch(tok):
+            continue
+        if DECIMAL_TOKEN.fullmatch(tok):
+            neg = tok.startswith("(") and tok.endswith(")")
+            try:
+                val = float(tok.strip("()"))
+            except ValueError:
+                continue
+            out.append(-val if neg else val)
+    return out
+
+
 def detect_unit(page_text: str) -> str:
     low = page_text.lower()
     # Common CSE wordings for thousands
@@ -374,6 +546,7 @@ def extract_metrics_from_page(page_text: str, page_number: int, stmt_type: str =
     issue of subordinated liabilities") which are NOT balance figures
     and would corrupt the sum if included.
     """
+    page_text = _repair_broken_money(page_text)
     unit = detect_unit(page_text)
     lines = page_text.split("\n")
     # Fallback candidates only: some line items wrap across two physical
@@ -440,9 +613,34 @@ def extract_metrics_from_page(page_text: str, page_number: int, stmt_type: str =
     # appear on the Statement of Changes in Equity and in notes, and we
     # don't want a stray match there to block the real one.
     if stmt_type in ("", "income_statement"):
+        # Track whether an "Earnings per share" header appeared so short
+        # labels like "Basic 13.12 15.13" can be accepted (JKH-style layout).
+        saw_eps_header = False
         for raw_line in lines:
             line = _clean_line_start(raw_line)
-            low = line.lower()
+            low = line.lower().strip()
+            if (
+                re.search(r"(earnings|loss).{0,20}per\s+share", low)
+                or low in (
+                    "earnings per share", "earnings/(loss) per share",
+                    "(loss) / earnings per share", "eps",
+                )
+            ):
+                saw_eps_header = True
+                # Header-only line has no values — continue to short labels
+                values = _parse_decimal_tokens(line)
+                if values and re.search(r"(basic|diluted|earnings)", low):
+                    results["eps"] = Extraction(
+                        metric="eps",
+                        current=values[0],
+                        previous=values[1] if len(values) > 1 else None,
+                        unit="LKR_per_share",
+                        page=page_number,
+                        source_line=raw_line.strip(),
+                        method="direct",
+                    )
+                    break
+                continue
             for pat in EPS_PATTERNS:
                 if re.search(pat, low):
                     values = _parse_decimal_tokens(line)
@@ -458,6 +656,85 @@ def extract_metrics_from_page(page_text: str, page_number: int, stmt_type: str =
                         )
                     break
             if "eps" in results:
+                break
+            # Short label "Basic …" / "Diluted …" only after EPS header
+            if saw_eps_header and "eps" not in results:
+                for pat in EPS_SHORT_LABELS:
+                    if re.search(pat, low):
+                        values = _parse_decimal_tokens(line)
+                        if values:
+                            results["eps"] = Extraction(
+                                metric="eps",
+                                current=values[0],
+                                previous=values[1] if len(values) > 1 else None,
+                                unit="LKR_per_share",
+                                page=page_number,
+                                source_line=raw_line.strip(),
+                                method="direct",
+                                notes="Matched short label after 'Earnings per share' header.",
+                            )
+                        break
+                if "eps" in results:
+                    break
+
+        # Direct Dividend Per Share, when the report states it explicitly
+        # (e.g. "Dividend per share 24.3 2.00 2.00"). Preferred over the
+        # back-calculated approximation in valuation.py whenever present.
+        for raw_line in lines:
+            line = _clean_line_start(raw_line)
+            low = line.lower()
+            for pat in DPS_PATTERNS:
+                if re.search(pat, low):
+                    values = _parse_decimal_tokens_keep_nil(line)
+                    if values:
+                        results["dividend_per_share"] = Extraction(
+                            metric="dividend_per_share",
+                            current=values[0],
+                            previous=values[1] if len(values) > 1 else None,
+                            unit="LKR_per_share",
+                            page=page_number,
+                            source_line=raw_line.strip(),
+                            method="direct",
+                        )
+                    break
+            if "dividend_per_share" in results:
+                break
+
+
+    # Direct Net Assets / Book Value per share (exact NAVPS from report).
+    # Appears on the face of equity / SOFP and on five-year summaries —
+    # allow on income_statement, balance_sheet, or unrestricted pages.
+    if stmt_type in ("", "income_statement", "balance_sheet") and "navps" not in results:
+        for raw_line in lines:
+            line = _clean_line_start(raw_line)
+            low = line.lower()
+            for pat in NAVPS_PATTERNS:
+                if re.search(pat, low):
+                    values = _parse_decimal_tokens(line)
+                    if not values:
+                        # Decade-at-a-glance often prints NAVPS with 1 decimal
+                        # (e.g. 246.2 / 8.04) — accept 1–2 decimal tokens here.
+                        values = []
+                        for tok in _trailing_numeric_tokens(line):
+                            m = re.fullmatch(r"\(?-?\d+\.\d{1,2}\)?", tok)
+                            if m:
+                                raw = tok.strip("()")
+                                try:
+                                    values.append(float(raw) * (-1 if tok.startswith("(") else 1))
+                                except ValueError:
+                                    pass
+                    if values:
+                        results["navps"] = Extraction(
+                            metric="navps",
+                            current=values[0],
+                            previous=values[1] if len(values) > 1 else None,
+                            unit="LKR_per_share",
+                            page=page_number,
+                            source_line=raw_line.strip(),
+                            method="direct",
+                        )
+                    break
+            if "navps" in results:
                 break
 
     # Credit Impairment / ECL — income statement preferred (profit impact).
@@ -524,11 +801,23 @@ def extract_metrics_from_page(page_text: str, page_number: int, stmt_type: str =
     # ("total borrowings", line-start "Borrowings" alone), prefer that single
     # line over summing components — avoids double-counting parent + children.
     debt_matches = []  # list of (values, raw_line, is_total_like)
+    # Cash-flow movement lines mention borrowings/leases but are not stock of debt.
+    _DEBT_CF_SKIP = re.compile(
+        r"^(proceeds|repayment|repayments|payment|payments|net\s+(increase|decrease)|drawdown)\b",
+        re.IGNORECASE,
+    )
     for raw_line in (lines if stmt_type == "balance_sheet" else []):
         line = _clean_line_start(raw_line)
         low = line.lower()
+        if _DEBT_CF_SKIP.search(low):
+            continue
         if any(re.search(pat, low) for pat in DEBT_PATTERNS):
             values = _parse_money_tokens(line)
+            # Skip cash-flow style lines where the stock figure is negative
+            # (e.g. financing-section "Bank overdrafts (30,048,743)" is a
+            # change, not a balance-sheet liability).
+            if values and values[0] is not None and values[0] < 0:
+                continue
             if values:
                 is_total = bool(re.search(
                     r"^(total\s+)?borrowings\b|^total\s+interest[- ]bearing|^total\s+debt\b",
@@ -542,6 +831,13 @@ def extract_metrics_from_page(page_text: str, page_number: int, stmt_type: str =
             best = max(totals, key=lambda m: abs(m[0][0]) if m[0] else 0)
             chosen = [best]
             method_note = "total-line preferred (components not summed)"
+            # Many reports (e.g. Dialog) show a plain "Borrowings" line under BOTH
+            # non-current and current liabilities - two halves of one debt figure,
+            # not duplicates. Add them rather than keeping only the larger half.
+            plain = [m for m in totals if re.match(r"^borrowings\b", _clean_line_start(m[1]).lower())]
+            if len(plain) == 2 and plain[0][0][0] != plain[1][0][0]:
+                chosen = plain
+                method_note = "non-current + current borrowings summed"
         else:
             chosen = debt_matches
             method_note = f"sum of {len(chosen)} component line(s)"

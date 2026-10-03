@@ -1,0 +1,59 @@
+CSE Analyzer updates (2026-10-04d)
+
+Replace your whole cse_analyzer folder with this one.
+
+1. Banks: new "Bank credit-quality group" on the Banking tab
+   Gross loans, Stage 1/2/3 loans, Stage 1/2/3 %, Stage 3 impairment, Stage 3 coverage,
+   total loan impairment, cost of risk, NPL / impaired loans (amount + ratio) and the
+   loan loss / ECL provision charge.
+   - New file bank_credit.py reads the loan-note / credit-quality tables (these are not on
+     the four face statements). Handles one-row-per-stage and one-column-per-stage layouts.
+   - Only loans to customers are read (placements, debt securities, guarantees are skipped),
+     and column layouts must add up (Stage 1+2+3 = Total) or the row is ignored.
+   - Anything summed or derived (e.g. gross loans = S1+S2+S3) shows on the Verification tab.
+   - New Things-to-Investigate checks: Stage 3 ratio up 1+ pt, Stage 2 share up 3+ pts,
+     thin Stage 3 coverage.
+   - Interim reports: the note's comparative column is the last year-end, so it is not filed
+     under the prior-year quarter.
+   - Not found shows "-", never 0. If a bank words its note differently, add the label
+     to bank_credit.py (every fix applies to all future reports).
+
+CSE Analyzer updates (2026-10-04c)
+
+Replace your whole cse_analyzer folder with this one.
+
+1. Interim reports (Dialog Q1 / H1 2026) now extract EPS, NAVPS and the whole balance sheet
+   - Cause: those PDFs extract as "Statementof financial position" (no space), so the
+     balance sheet page was never recognised. Heading matching now ignores whitespace.
+2. Interim balance-sheet comparison column is the last year-end (31 Dec), not the same
+   quarter a year earlier - it is no longer filed under 2025-Q1 / 2025-H1.
+3. Total debt: a plain "Borrowings" line under non-current AND current liabilities are now
+   added together (previously only the larger half was used - Dialog debt was understated).
+4. Statement continuation pages: no longer pull in the notes / next statement by mistake
+   (this was feeding a segment-note figure into depreciation).
+
+CSE Analyzer updates (2026-10-04b)
+
+Replace your whole cse_analyzer folder with this one (don't merge file-by-file).
+
+1. Dialog Axiata EPS / DPS
+   - 2024 report: Statement of Comprehensive Income continues on the next page
+     (profit attributable, EPS, DPS) - that page is now read too.
+   - Dividend per share: a dash "-" now means 0 (no dividend), no longer shifts
+     the Company column into the Group prior-year slot.
+   - NAVPS ("Net assets per share (Rs.)") verified on all three Dialog reports.
+
+2. Multi-company tabs
+   - Chrome-style tab bar at the top of the page, one tab per company.
+   - Blank company name no longer overwrites: it auto-detects the name from the
+     PDF (e.g. "Dialog Axiata PLC") or becomes "Company N".
+   - Same name = updates that tab; a different name = a new tab.
+   - Share price / widgets are per company (no more carrying one company's
+     price into another).
+   - Tabs are saved to ~/.cse_analyzer/workspace.pkl so a browser refresh or
+     restart keeps them. Close a tab with the X in the sidebar.
+
+Run:
+  cd cse_analyzer
+  pip install -r requirements.txt
+  streamlit run app.py

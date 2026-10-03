@@ -1,0 +1,2 @@
+Build: 2026.10.04-bank-credit
+If the UI does not show this build id under the hero title, you are still running the OLD code.

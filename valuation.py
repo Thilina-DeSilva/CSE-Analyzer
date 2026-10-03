@@ -9,23 +9,34 @@ selling, or how much to invest - it takes numbers the user chooses
 
 
 def compute_valuation(share_price: float, eps: float, total_equity: float,
-                       net_profit: float, dividend_paid: float = None) -> dict:
+                       net_profit: float, dividend_paid: float = None,
+                       dividend_per_share_direct: float = None) -> dict:
     """
     Shares outstanding isn't something we extract directly, so we
     APPROXIMATE it as net_profit / eps (since EPS = net profit / shares
     outstanding, by definition). This is clearly labeled as an
     approximation - a real shares-outstanding figure (from the annual
     report's cover page or share register note) would be more precise.
+
+    dividend_per_share_direct: when the report states "Dividend Per
+    Share" explicitly as its own line, pass it here - it's exact, and
+    is ALWAYS preferred over back-calculating DPS from total dividend
+    paid ÷ approximated share count, which is a two-step approximation.
     """
     result = {"approximate_shares_outstanding": None, "book_value_per_share": None,
               "pe_ratio": None, "pb_ratio": None, "dividend_per_share_approx": None,
-              "dividend_yield_pct": None}
+              "dividend_yield_pct": None, "dps_is_exact": False}
 
     if not share_price or share_price <= 0:
         return result
 
     if eps and eps != 0:
         result["pe_ratio"] = share_price / eps
+
+    if dividend_per_share_direct is not None:
+        result["dividend_per_share_approx"] = dividend_per_share_direct
+        result["dps_is_exact"] = True
+        result["dividend_yield_pct"] = (dividend_per_share_direct / share_price) * 100
 
     # Shares ≈ Net Profit / EPS. CRITICAL: net_profit and total_equity must
     # be in the SAME unit (both Rs.'000 or both full Rs.). If the report
@@ -49,7 +60,9 @@ def compute_valuation(share_price: float, eps: float, total_equity: float,
                 result["book_value_per_share"] = bvps
             if bvps != 0:
                 result["pb_ratio"] = share_price / bvps
-        if dividend_paid is not None and shares_outstanding:
+        # Only fall back to the approximated DPS if we don't already have
+        # the exact, report-stated figure from above.
+        if not result["dps_is_exact"] and dividend_paid is not None and shares_outstanding:
             dps = abs(dividend_paid) / shares_outstanding
             if share_price > 0 and dps > share_price * 2:
                 # likely dividend was in Rs.'000 while we need Rs per share

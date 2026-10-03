@@ -120,6 +120,76 @@ GLOSSARY = {
             {"title": "Investopedia: Loan Loss Provision", "url": "https://www.investopedia.com/terms/l/loanlossprovision.asp"},
         ],
     },
+    "gross_loans": {
+        "plain": 'Total loans to customers BEFORE deducting the impairment allowance. This is the base that Stage % and NPL ratios are measured against.',
+        "watch_for": "Compare with 'Loans to customers (net)' on the balance sheet: the gap is the allowance for expected credit losses.",
+        "learn_more": [{"title": "Investopedia: Expected Credit Loss (ECL)", "url": "https://www.investopedia.com/terms/e/expected-credit-loss.asp"}],
+    },
+    "stage1_loans": {
+        "plain": 'IFRS 9 Stage 1: performing loans where credit risk has not increased significantly since they were made. Only 12 months of expected losses are provided for.',
+        "watch_for": 'A shrinking Stage 1 share means more of the book is moving into Stage 2/3.',
+        "learn_more": [{"title": "Investopedia: Expected Credit Loss (ECL)", "url": "https://www.investopedia.com/terms/e/expected-credit-loss.asp"}],
+    },
+    "stage2_loans": {
+        "plain": 'IFRS 9 Stage 2: loans whose credit risk has risen significantly (for example 30+ days overdue or restructured) but that are not yet in default. Lifetime expected losses are provided for.',
+        "watch_for": 'Stage 2 is the early-warning bucket. Rising Stage 2 often shows up before higher Stage 3 and bigger provisions.',
+        "learn_more": [{"title": "Investopedia: Expected Credit Loss (ECL)", "url": "https://www.investopedia.com/terms/e/expected-credit-loss.asp"}],
+    },
+    "stage3_loans": {
+        "plain": 'IFRS 9 Stage 3: credit-impaired loans (typically 90+ days overdue or otherwise in default). Closest IFRS 9 equivalent of non-performing loans.',
+        "watch_for": 'Banks may report a regulatory NPL figure that differs slightly from Stage 3. Check both if the report gives both.',
+        "learn_more": [{"title": "Investopedia: Expected Credit Loss (ECL)", "url": "https://www.investopedia.com/terms/e/expected-credit-loss.asp"}, {"title": "Investopedia: Non-Performing Loan (NPL)", "url": "https://www.investopedia.com/terms/n/nonperformingloan.asp"}],
+    },
+    "stage1_pct": {
+        "plain": 'Stage 1 loans as a % of gross loans.',
+        "watch_for": 'Normally 85-95% for a healthy bank; a falling trend matters more than the level.',
+        "learn_more": [{"title": "Investopedia: Expected Credit Loss (ECL)", "url": "https://www.investopedia.com/terms/e/expected-credit-loss.asp"}],
+    },
+    "stage2_pct": {
+        "plain": 'Stage 2 loans as a % of gross loans.',
+        "watch_for": 'Rapid growth here can mean stress that has not yet turned into impaired loans, e.g. after rate shocks or a sovereign restructuring.',
+        "learn_more": [{"title": "Investopedia: Expected Credit Loss (ECL)", "url": "https://www.investopedia.com/terms/e/expected-credit-loss.asp"}],
+    },
+    "stage3_pct": {
+        "plain": 'Stage 3 loans divided by gross loans: the impaired loans ratio, the headline measure of bad loans.',
+        "watch_for": "Lower is better. Compare with the bank's own history and with peers; also check the coverage ratio.",
+        "learn_more": [{"title": "Investopedia: Non-Performing Loan (NPL)", "url": "https://www.investopedia.com/terms/n/nonperformingloan.asp"}],
+    },
+    "stage3_impairment": {
+        "plain": 'The expected-credit-loss allowance the bank holds against its Stage 3 loans. It sits on the balance sheet as a deduction from loans.',
+        "watch_for": 'This is a stock (cumulative balance), not the yearly profit-and-loss charge.',
+        "learn_more": [{"title": "Investopedia: Expected Credit Loss (ECL)", "url": "https://www.investopedia.com/terms/e/expected-credit-loss.asp"}],
+    },
+    "stage3_coverage_pct": {
+        "plain": 'Stage 3 impairment allowance divided by Stage 3 loans: how much of the bad book is already provided for.',
+        "watch_for": 'Higher means a bigger cushion. A low figure can be fine if loans are well collateralised, but it means future losses would hit profit.',
+        "learn_more": [{"title": "Investopedia: Expected Credit Loss (ECL)", "url": "https://www.investopedia.com/terms/e/expected-credit-loss.asp"}],
+    },
+    "total_loan_impairment": {
+        "plain": 'The total ECL allowance on loans across Stages 1, 2 and 3: the balance-sheet stock of provisions.',
+        "watch_for": "Different from the income-statement provision charge, which is only that year's addition.",
+        "learn_more": [{"title": "Investopedia: Expected Credit Loss (ECL)", "url": "https://www.investopedia.com/terms/e/expected-credit-loss.asp"}],
+    },
+    "cost_of_risk_pct": {
+        "plain": "The year's loan-loss charge divided by the average net loan book: the annual price of credit risk.",
+        "watch_for": 'Rising cost of risk eats into profit directly. Compare years and peers; a very low figure after a high one can mean provision releases.',
+        "learn_more": [{"title": "Investopedia: Expected Credit Loss (ECL)", "url": "https://www.investopedia.com/terms/e/expected-credit-loss.asp"}],
+    },
+    "npl_loans": {
+        "plain": 'Non-performing / impaired loans as the bank reports them. If the report has no separate NPL line, Stage 3 loans are shown instead.',
+        "watch_for": 'Definitions differ between banks and between regulatory and accounting views, so compare like with like.',
+        "learn_more": [{"title": "Investopedia: Non-Performing Loan (NPL)", "url": "https://www.investopedia.com/terms/n/nonperformingloan.asp"}],
+    },
+    "npl_amount": {
+        "plain": 'Non-performing / impaired loans as the bank reports them; if no NPL line was found, Stage 3 loans are used.',
+        "watch_for": 'Definitions differ between banks and between regulatory and accounting views, so compare like with like.',
+        "learn_more": [{"title": "Investopedia: Non-Performing Loan (NPL)", "url": "https://www.investopedia.com/terms/n/nonperformingloan.asp"}],
+    },
+    "npl_ratio_pct": {
+        "plain": 'NPL / impaired loans divided by gross loans.',
+        "watch_for": "Same idea as the Stage 3 ratio, but based on the bank's NPL line when one is printed.",
+        "learn_more": [{"title": "Investopedia: Non-Performing Loan (NPL)", "url": "https://www.investopedia.com/terms/n/nonperformingloan.asp"}],
+    },
     # ratios
     "net_profit_margin_pct": {
         "plain": "Net Profit ÷ Revenue (or Gross Income for banks) × 100. Out of every Rs. 100 earned, how much ends up as actual profit.",

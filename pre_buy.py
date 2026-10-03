@@ -61,15 +61,23 @@ def compute_pre_buy(with_ratios: list, share_price: float = 0.0) -> dict:
     if not with_ratios:
         return {"years": [], "sections": {}}
 
-    years = [r["year"] for r in with_ratios]
-    n_intervals = years[-1] - years[0] if len(years) >= 2 else 0
+    from ratios import find_prior_comparable, _period_type
+
     latest = with_ratios[-1]
-    prior = with_ratios[-2] if len(with_ratios) >= 2 else None
+    # Same-period prior only (FY→FY, Q1→Q1, H1→H1, …)
+    prior = find_prior_comparable(with_ratios, len(with_ratios) - 1)
     latest_r = latest.get("_ratios", {})
     prior_r = prior.get("_ratios", {}) if prior else {}
 
-    # --- Growth (CAGR over available span) ---
-    rev_pairs = [(r["year"], _top_line(r)) for r in with_ratios if _top_line(r) is not None]
+    # For multi-year CAGR use only records matching the latest period type
+    # so a Q1 series never compounds against full-year annuals.
+    pt = _period_type(latest)
+    peer_series = [r for r in with_ratios if _period_type(r) == pt]
+    years = [r["year"] for r in peer_series if r.get("year") is not None]
+    n_intervals = years[-1] - years[0] if len(years) >= 2 else 0
+
+    # --- Growth (CAGR over available same-period span) ---
+    rev_pairs = [(r["year"], _top_line(r)) for r in peer_series if _top_line(r) is not None]
     if len(rev_pairs) >= 2:
         rev0, rev1 = rev_pairs[0][1], rev_pairs[-1][1]
         rev_span = rev_pairs[-1][0] - rev_pairs[0][0]
@@ -77,7 +85,7 @@ def compute_pre_buy(with_ratios: list, share_price: float = 0.0) -> dict:
         rev0 = rev1 = None
         rev_span = 0
 
-    np_pairs = [(r["year"], r.get("net_profit")) for r in with_ratios if r.get("net_profit") is not None]
+    np_pairs = [(r["year"], r.get("net_profit")) for r in peer_series if r.get("net_profit") is not None]
     if len(np_pairs) >= 2:
         np0, np1 = np_pairs[0][1], np_pairs[-1][1]
         np_span = np_pairs[-1][0] - np_pairs[0][0]
@@ -85,7 +93,7 @@ def compute_pre_buy(with_ratios: list, share_price: float = 0.0) -> dict:
         np0 = np1 = None
         np_span = 0
 
-    eps_pairs = [(r["year"], r.get("eps")) for r in with_ratios if r.get("eps") is not None]
+    eps_pairs = [(r["year"], r.get("eps")) for r in peer_series if r.get("eps") is not None]
     if len(eps_pairs) >= 2:
         eps0, eps1 = eps_pairs[0][1], eps_pairs[-1][1]
         eps_span = eps_pairs[-1][0] - eps_pairs[0][0]
@@ -138,20 +146,33 @@ def compute_pre_buy(with_ratios: list, share_price: float = 0.0) -> dict:
     }
 
     # --- Shareholder value (NAVPS ≈ book value per share via approx shares) ---
+    # Restricted to same period type as latest (FY series, or Q1 series, …)
     navps_by_year = []
     dps_by_year = []
-    for r in with_ratios:
-        np_ = r.get("net_profit")
+    for r in peer_series:
+        np_ = r.get("profit_attributable")
+        if np_ is None:
+            np_ = r.get("net_profit")
         eps = r.get("eps")
         eq = r.get("total_equity")
         div = r.get("dividend_paid")
+        direct_dps = r.get("dividend_per_share")  # exact, when the report states it
+        direct_navps = r.get("navps")
         shares = None
         if np_ is not None and eps and eps != 0:
             shares = np_ / eps
-        navps = (eq / shares) if (eq is not None and shares) else None
-        dps = (abs(div) / shares) if (div is not None and shares) else None
+        if direct_navps is not None:
+            navps = direct_navps
+        else:
+            navps = (eq / shares) if (eq is not None and shares) else None
+        if direct_dps is not None:
+            dps = direct_dps
+            dps_is_exact = True
+        else:
+            dps = (abs(div) / shares) if (div is not None and shares) else None
+            dps_is_exact = False
         navps_by_year.append({"year": r["year"], "navps": navps, "approx_shares": shares})
-        dps_by_year.append({"year": r["year"], "dps": dps, "dividend_paid": div})
+        dps_by_year.append({"year": r["year"], "dps": dps, "dividend_paid": div, "dps_is_exact": dps_is_exact})
 
     nav_vals = [x["navps"] for x in navps_by_year if x["navps"] is not None]
     nav_growth = None

@@ -8,15 +8,22 @@ pattern-recognition, not replace judgment.
 
 def compute_red_flags(with_ratios: list) -> list:
     """with_ratios: merged, ratio'd yearly records, sorted oldest->newest.
-    Returns a list of {severity, title, detail} dicts."""
+    Returns a list of {severity, title, detail} dicts.
+
+    YoY comparisons only use the same period type one year earlier
+    (FY→FY, Q1→Q1, H1→H1). If no matching prior exists, comparison
+    flags are skipped rather than mixing unlike periods.
+    """
+    from ratios import find_prior_comparable
+
     flags = []
-    if len(with_ratios) < 2:
+    if not with_ratios:
         return flags
 
     latest = with_ratios[-1]
-    prior = with_ratios[-2]
+    prior = find_prior_comparable(with_ratios, len(with_ratios) - 1)
     latest_r = latest.get("_ratios", {})
-    prior_r = prior.get("_ratios", {})
+    prior_r = (prior.get("_ratios", {}) if prior else {})
 
     # 1. Negative operating cash flow
     ocf = latest.get("operating_cash_flow")
@@ -63,8 +70,10 @@ def compute_red_flags(with_ratios: list) -> list:
                       "what the new debt was used for and whether interest costs are covered.",
         })
 
-    # 5. Declining revenue/gross income
-    rev1 = prior.get("revenue") if prior.get("revenue") is not None else prior.get("gross_income")
+    # 5. Declining revenue/gross income (same period type only)
+    rev1 = None
+    if prior is not None:
+        rev1 = prior.get("revenue") if prior.get("revenue") is not None else prior.get("gross_income")
     rev2 = latest.get("revenue") if latest.get("revenue") is not None else latest.get("gross_income")
     if rev1 is not None and rev2 is not None and rev2 < rev1:
         pct = ((rev2 - rev1) / rev1) * 100
@@ -76,7 +85,8 @@ def compute_red_flags(with_ratios: list) -> list:
         })
 
     # 6. EPS declining while revenue grows (cost/efficiency concern)
-    eps1, eps2 = prior.get("eps"), latest.get("eps")
+    eps1 = prior.get("eps") if prior is not None else None
+    eps2 = latest.get("eps")
     if (eps1 is not None and eps2 is not None and eps2 < eps1
             and rev1 is not None and rev2 is not None and rev2 > rev1):
         flags.append({

@@ -50,6 +50,9 @@ DEPRIORITISE = [
     "annex",
     "us dollar",
     "u.s. dollar",
+    "us$",
+    "in us$",
+    "statement of profit or loss in us",
     "decade at a glance",
     "ten year",
     "10 year",
@@ -68,6 +71,15 @@ DEPRIORITISE = [
     "quarterly analysis",
     "segment information",
     "notes to the financial statements",
+    "vertical analysis",
+    "horizontal analysis",
+    "rs mn",
+    "rs. mn",
+    "rupees million",
+    "maturity analysis",
+    "contractual period to maturity",
+    "segmental analysis",
+    "related party",
 ]
 
 # Soft signals that a page is the REAL face statement
@@ -85,6 +97,19 @@ PRIMARY_SIGNALS = [
 MIN_MONEY_NUMBERS = 8
 
 
+def _squash(text: str) -> str:
+    """Lowercase and drop ALL whitespace. Some PDFs (e.g. Dialog interims)
+    extract with missing spaces - "Statementof financial position" - so
+    heading checks must ignore whitespace entirely."""
+    return re.sub(r"\s+", "", text.lower())
+
+
+def _kw_in(kws, text: str) -> bool:
+    flat = " ".join(text.lower().split())
+    sq = _squash(text)
+    return any(kw in flat or _squash(kw) in sq for kw in kws)
+
+
 def _stage1_candidates(pdf_path: str) -> dict:
     reader = pypdf.PdfReader(pdf_path)
     n_pages = len(reader.pages)
@@ -93,12 +118,16 @@ def _stage1_candidates(pdf_path: str) -> dict:
     for i, page in enumerate(reader.pages):
         text = page.extract_text() or ""
         low = " ".join(text.lower().split())  # collapse newlines for keyword match
+        # Only the top of the page decides deprioritisation — footers often
+        # mention "notes to the financial statements" / "value added" and
+        # would otherwise poison the real face statements.
+        head_low = " ".join(text[:600].lower().split())
         money_count = len(MONEY_PATTERN.findall(text))
         if money_count < MIN_MONEY_NUMBERS:
             continue
 
         large_count = len(LARGE_MONEY.findall(text))
-        deprioritised = any(flag in low for flag in DEPRIORITISE)
+        deprioritised = any(flag in head_low for flag in DEPRIORITISE)
 
         # Prefer middle-of-report zone (after covers/TOC, before deep notes)
         # Typical primary statements sit ~30–70% through the PDF.
@@ -112,7 +141,7 @@ def _stage1_candidates(pdf_path: str) -> dict:
         primary_hits = sum(1 for p in PRIMARY_SIGNALS if re.search(p, low))
 
         for key, kws in KEYWORDS.items():
-            if any(kw in low for kw in kws):
+            if _kw_in(kws, low):
                 candidates[key].append({
                     "page": i,
                     "money_count": money_count,
@@ -143,7 +172,7 @@ def _stage2_confirm(pdf_path: str, candidates: dict) -> dict:
                 text = page_text_cache[c["page"]]
                 # Collapse newlines so "Statement of\nFinancial Position" matches
                 head = " ".join(text[:900].lower().split())
-                is_heading = any(kw in head for kw in KEYWORDS[key])
+                is_heading = _kw_in(KEYWORDS[key], text[:900])
                 if not is_heading:
                     continue
 
@@ -157,17 +186,18 @@ def _stage2_confirm(pdf_path: str, candidates: dict) -> dict:
                 has_assets = False
                 if key == "balance_sheet":
                     low_full = text.lower()
-                    has_assets = "total assets" in low_full
-                    if not has_assets and "total equity" not in low_full:
+                    sq_full = _squash(text)
+                    has_assets = "totalassets" in sq_full
+                    if not has_assets and "totalequity" not in sq_full:
                         continue
                 c = {**c, "has_total_assets": has_assets}
 
                 # Income: require revenue/turnover or profit line
                 if key == "income_statement":
-                    low_full = text.lower()
+                    low_full = _squash(text)
                     if not any(x in low_full for x in (
-                        "revenue", "turnover", "profit for the", "gross profit",
-                        "net interest income", "gross income",
+                        "revenue", "turnover", "profitforthe", "grossprofit",
+                        "netinterestincome", "grossincome",
                     )):
                         continue
 
@@ -197,10 +227,14 @@ def find_statement_pages(pdf_path: str, verbose: bool = False) -> dict:
     for key, lst in confirmed.items():
         lst.sort(key=lambda c: (
             c["deprioritised"],
+            # Balance-sheet pages that actually contain "Total Assets" must
+            # rank above equity-only continuation pages (which often have
+            # more header primary_hits but no asset totals).
+            -int(c.get("has_total_assets", False)),
+            # Full-scale LKR figures beat US$ annex / Rs Mn summaries
+            -c.get("large_count", 0),
             -c.get("primary_hits", 0),
             c.get("position_penalty", 0),
-            -int(c.get("has_total_assets", False)),  # BS pages with Total Assets first
-            -c.get("large_count", 0),
             -c["money_count"],
             c["page"],
         ))
